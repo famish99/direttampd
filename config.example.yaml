@@ -1,0 +1,26 @@
+# Direttampd Configuration Example
+
+# Available MemoryPlay output targets
+targets:
+  - name: living-room
+    ip: "fe80::1234:5678:9abc:def0"
+    interface: "eth0"
+
+  - name: bedroom
+    ip: "fe80::abcd:ef01:2345:6789"
+    interface: "eth0"
+
+# Preferred output target (must match a target name above)
+preferred_target: living-room
+
+# Cache configuration
+cache:
+  directory: "/tmp/direttampd-cache"
+  max_size_gb: 10
+
+# Playback configuration
+playback:
+  silence_buffer_seconds: 3  # Silence padding before/after tracks for sync
+
+# Note: Audio format is always preserved from source files
+# No transcoding is performed - native sample rate, bit depth, and channels are maintained
