@@ -246,13 +246,23 @@ func (c *Client) RequestStatus() error {
 	return c.SendFrameMessage(msg)
 }
 
-// ReadResponse reads a response from the host (non-blocking)
-func (c *Client) ReadResponse() (*FrameMessage, error) {
+// ReadResponse reads a response from the host with optional timeout
+// If timeout is 0, no timeout is set (blocking read)
+func (c *Client) ReadResponse(timeout time.Duration) (*FrameMessage, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
 	if !c.connected {
 		return nil, fmt.Errorf("not connected")
+	}
+
+	// Set read deadline if timeout is specified
+	if timeout > 0 {
+		if err := c.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
+			return nil, fmt.Errorf("failed to set read deadline: %w", err)
+		}
+		// Clear deadline after read completes
+		defer c.conn.SetReadDeadline(time.Time{})
 	}
 
 	return ParseFrameMessage(c.reader)
@@ -287,12 +297,6 @@ func (c *Client) GetTargetList(timeout time.Duration) ([]string, error) {
 	readTimeout := 500 * time.Millisecond // Short timeout between messages
 
 	for {
-		responseChan := make(chan result, 1)
-		go func() {
-			msg, err := c.ReadResponse()
-			responseChan <- result{msg: msg, err: err}
-		}()
-
 		remaining := time.Until(deadline)
 		if remaining < 0 {
 			if len(targets) == 0 {
@@ -301,45 +305,51 @@ func (c *Client) GetTargetList(timeout time.Duration) ([]string, error) {
 			break
 		}
 
-		select {
-		case res := <-responseChan:
-			if res.err != nil {
-				// If we already got some targets, return them
+		// Use shorter timeout for reading individual messages
+		currentTimeout := readTimeout
+		if currentTimeout > remaining {
+			currentTimeout = remaining
+		}
+
+		// Read response with timeout
+		msg, err := c.ReadResponse(currentTimeout)
+		if err != nil {
+			// Check if this is a timeout error
+			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+				// Timeout is expected when no more messages - return what we got
 				if len(targets) > 0 {
 					return targets, nil
 				}
-				return nil, fmt.Errorf("failed to read target list response: %w", res.err)
-			}
-
-			// Check if this is a TargetList message by looking in the Headers map
-			if value, ok := res.msg.Headers[HeaderTargetList]; ok {
-				// Parse format: "IP_ADDRESS INTERFACE_NO NAME"
-				// Replace first space with % for display format: "IP%IFNO NAME"
-				value = strings.TrimSpace(value)
-				if value != "" {
-					parts := strings.SplitN(value, " ", 3)
-					if len(parts) >= 3 {
-						// Format as "IP%IFNO NAME" to match reference implementation
-						formatted := fmt.Sprintf("%s%%%s %s", parts[0], parts[1], parts[2])
-						targets = append(targets, formatted)
-					} else {
-						// Fallback to original format if parsing fails
-						targets = append(targets, value)
-					}
-				}
-				// Continue reading more TargetList messages
-				readTimeout = 500 * time.Millisecond
-				continue
-			} else {
-				// Non-TargetList message means we're done
-				return targets, nil
-			}
-
-		case <-time.After(readTimeout):
-			// No more messages - return what we got
-			if len(targets) == 0 {
 				return nil, fmt.Errorf("timeout waiting for target list response")
 			}
+			// If we already got some targets, return them
+			if len(targets) > 0 {
+				return targets, nil
+			}
+			return nil, fmt.Errorf("failed to read target list response: %w", err)
+		}
+
+		// Check if this is a TargetList message by looking in the Headers map
+		if value, ok := msg.Headers[HeaderTargetList]; ok {
+			// Parse format: "IP_ADDRESS INTERFACE_NO NAME"
+			// Replace first space with % for display format: "IP%IFNO NAME"
+			value = strings.TrimSpace(value)
+			if value != "" {
+				parts := strings.SplitN(value, " ", 3)
+				if len(parts) >= 3 {
+					// Format as "IP%IFNO NAME" to match reference implementation
+					formatted := fmt.Sprintf("%s%%%s %s", parts[0], parts[1], parts[2])
+					targets = append(targets, formatted)
+				} else {
+					// Fallback to original format if parsing fails
+					targets = append(targets, value)
+				}
+			}
+			// Continue reading more TargetList messages
+			readTimeout = 500 * time.Millisecond
+			continue
+		} else {
+			// Non-TargetList message means we're done
 			return targets, nil
 		}
 	}

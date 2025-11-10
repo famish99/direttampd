@@ -4,6 +4,7 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,7 +19,7 @@ import (
 
 var (
 	configPath  = flag.String("config", getDefaultConfigPath(), "Path to configuration file")
-	host        = flag.String("host", "", "MemoryPlay host IP address (overrides config, default: ::1 for localhost)")
+	host        = flag.String("host", "", "MemoryPlay host IP address with optional port (e.g., host:port, default: ::1:19641)")
 	targetName  = flag.String("target", "", "Override preferred target by name")
 	listTargets = flag.Bool("list-targets", false, "List available targets from MemoryPlay host and exit")
 	mpdAddr     = flag.String("mpd-addr", "localhost:6600", "MPD server listen address")
@@ -150,17 +151,32 @@ func getDefaultConfigPath() string {
 	return locations[0]
 }
 
-func listAvailableTargets(hostIP string) error {
+func listAvailableTargets(hostAddr string) error {
+	var hostIP, port string
+
 	// Default to localhost if not specified
-	if hostIP == "" {
+	if hostAddr == "" {
 		hostIP = "::1"
+		port = "19641"
+	} else {
+		// Try to parse host:port
+		parsedHost, parsedPort, err := net.SplitHostPort(hostAddr)
+		if err != nil {
+			// No port specified, use the whole string as host with default port
+			hostIP = hostAddr
+			port = "19641"
+		} else {
+			hostIP = parsedHost
+			port = parsedPort
+		}
 	}
 
-	fmt.Printf("Connecting to MemoryPlay host at %s...\n", hostIP)
+	fmt.Printf("Connecting to MemoryPlay host at %s:%s...\n", hostIP, port)
 
 	// Create a temporary target to connect to the host
 	target := &memoryplay.Target{
 		IP:        hostIP,
+		Port:      port,
 		Interface: "",
 		Name:      "query",
 	}
