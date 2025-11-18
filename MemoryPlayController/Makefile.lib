@@ -1,0 +1,169 @@
+# Makefile for libmemoryplaycontroller shared library
+# Usage:
+#   make -f Makefile.lib                    # Auto-detect architecture, default x64 to v2
+#   make -f Makefile.lib X64_VER=v3         # Use x64 v3 optimizations
+#   make -f Makefile.lib ARCH_NAME=aarch64-linux-15  # Override architecture
+
+CC = $(CROSS_COMPILE)gcc
+CXX = $(CROSS_COMPILE)g++
+AR = $(CROSS_COMPILE)ar
+
+# Auto-detect architecture if not specified
+ifeq ($(ARCH_NAME),)
+	MACHINE := $(shell uname -m)
+	ifeq ($(MACHINE),x86_64)
+		# Allow selecting x64 version (v2, v3, v4, zen4), default to v2
+		X64_VER ?= v2
+		ARCH_NAME = x64-linux-15$(X64_VER)
+	else ifeq ($(MACHINE),aarch64)
+		ARCH_NAME = aarch64-linux-15
+	else ifeq ($(MACHINE),riscv64)
+		ARCH_NAME = riscv64-linux-15
+	else
+		$(error Unsupported architecture: $(MACHINE))
+	endif
+endif
+
+ARCH_SUFFIX = _$(ARCH_NAME)
+
+# Library name
+LIB_NAME = libmemoryplaycontroller
+LIB_SO = $(LIB_NAME).so
+LIB_A = $(LIB_NAME).a
+
+# Compiler flags
+CFLAGS = -I ./Find -I ../../Find -std=c++17 -D_GLIBCXX_USE_NANOSLEEP -fchar8_t $(CFLAGS_DEF) -O2
+CXXFLAGS = $(CFLAGS)
+
+# Linker flags for test executables (static linking)
+LDFLAGS_TEST = -pthread -lstdc++ -lm -static
+
+# Static libraries needed
+STATIC_LIBS = -L./flac/src/libFLAC/.libs -lFLAC -L./flac/src/libFLAC++/.libs -lFLAC++ -L./ -lFind$(ARCH_SUFFIX) -lACQUA$(ARCH_SUFFIX)
+
+# Library sources and objects
+LIB_SRC = lib_memory_play_controller.cpp
+LIB_OBJ = lib_memory_play_controller.o
+
+# WAV support (uses existing WAV.o compiled by main Makefile)
+WAV_OBJ = WAV.o FlacDecode.o
+
+# Test programs
+TEST_LIST_HOSTS = test_list_hosts
+TEST_LIST_HOSTS_SRC = test_list_hosts.c
+TEST_LIST_HOSTS_OBJ = test_list_hosts.o
+
+TEST_LIST_TARGETS = test_list_targets
+TEST_LIST_TARGETS_SRC = test_list_targets.c
+TEST_LIST_TARGETS_OBJ = test_list_targets.o
+
+TEST_UPLOAD_AUDIO = test_upload_audio
+TEST_UPLOAD_AUDIO_SRC = test_upload_audio.c
+TEST_UPLOAD_AUDIO_OBJ = test_upload_audio.o
+
+TEST_SESSION_CONTROL = test_session_control
+TEST_SESSION_CONTROL_SRC = test_session_control.c
+TEST_SESSION_CONTROL_OBJ = test_session_control.o
+
+# Default target: build everything
+all: $(LIB_A) $(TEST_LIST_HOSTS) $(TEST_LIST_TARGETS) $(TEST_UPLOAD_AUDIO) $(TEST_SESSION_CONTROL)
+
+# Build shared library (if needed in the future with -fPIC compiled static libs)
+$(LIB_SO): $(LIB_OBJ)
+	@ echo [LINK] $@
+	@ $(CXX) -shared -fPIC -pthread -lstdc++ -o $@ $^ $(STATIC_LIBS)
+
+# Build static library (including WAV support)
+$(LIB_A): $(LIB_OBJ) $(WAV_OBJ)
+	@ echo [AR] $@
+	@ $(AR) rcs $@ $^
+
+# Compile library source
+$(LIB_OBJ): $(LIB_SRC)
+	@ echo [COMPILE] $<
+	@ $(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Build test_list_hosts (statically linked)
+$(TEST_LIST_HOSTS): $(TEST_LIST_HOSTS_OBJ) $(LIB_A)
+	@ echo [LINK] $@
+	@ $(CXX) -o $@ $(TEST_LIST_HOSTS_OBJ) $(LIB_A) $(STATIC_LIBS) $(LDFLAGS_TEST)
+
+# Compile test source
+$(TEST_LIST_HOSTS_OBJ): $(TEST_LIST_HOSTS_SRC) lib_memory_play_controller.h
+	@ echo [COMPILE] $<
+	@ $(CC) -c -std=c11 $< -o $@
+
+# Build test_list_targets (statically linked)
+$(TEST_LIST_TARGETS): $(TEST_LIST_TARGETS_OBJ) $(LIB_A)
+	@ echo [LINK] $@
+	@ $(CXX) -o $@ $(TEST_LIST_TARGETS_OBJ) $(LIB_A) $(STATIC_LIBS) $(LDFLAGS_TEST)
+
+# Compile test source
+$(TEST_LIST_TARGETS_OBJ): $(TEST_LIST_TARGETS_SRC) lib_memory_play_controller.h
+	@ echo [COMPILE] $<
+	@ $(CC) -c -std=c11 $< -o $@
+
+# Build test_upload_audio (statically linked)
+$(TEST_UPLOAD_AUDIO): $(TEST_UPLOAD_AUDIO_OBJ) $(LIB_A)
+	@ echo [LINK] $@
+	@ $(CXX) -o $@ $(TEST_UPLOAD_AUDIO_OBJ) $(LIB_A) $(STATIC_LIBS) $(LDFLAGS_TEST)
+
+# Compile test source
+$(TEST_UPLOAD_AUDIO_OBJ): $(TEST_UPLOAD_AUDIO_SRC) lib_memory_play_controller.h
+	@ echo [COMPILE] $<
+	@ $(CC) -c -std=c11 $< -o $@
+
+# Build test_session_control (statically linked)
+$(TEST_SESSION_CONTROL): $(TEST_SESSION_CONTROL_OBJ) $(LIB_A)
+	@ echo [LINK] $@
+	@ $(CXX) -o $@ $(TEST_SESSION_CONTROL_OBJ) $(LIB_A) $(STATIC_LIBS) $(LDFLAGS_TEST)
+
+# Compile test source
+$(TEST_SESSION_CONTROL_OBJ): $(TEST_SESSION_CONTROL_SRC) lib_memory_play_controller.h
+	@ echo [COMPILE] $<
+	@ $(CC) -c -std=c11 $< -o $@
+
+# Clean build artifacts
+clean:
+	@ echo [CLEAN] Library and tests
+	@ rm -f $(LIB_SO) $(LIB_A) $(LIB_OBJ)
+	@ rm -f $(TEST_LIST_HOSTS) $(TEST_LIST_HOSTS_OBJ)
+	@ rm -f $(TEST_LIST_TARGETS) $(TEST_LIST_TARGETS_OBJ)
+	@ rm -f $(TEST_UPLOAD_AUDIO) $(TEST_UPLOAD_AUDIO_OBJ)
+	@ rm -f $(TEST_SESSION_CONTROL) $(TEST_SESSION_CONTROL_OBJ)
+
+# Run the list hosts test
+test-list: $(TEST_LIST_HOSTS)
+	@ echo [TEST] List Hosts
+	@ ./$(TEST_LIST_HOSTS)
+
+# Run test with verbose output
+test-list-verbose: $(TEST_LIST_HOSTS)
+	@ echo [TEST] List Hosts (verbose)
+	@ ./$(TEST_LIST_HOSTS) -v
+
+# Run the list targets test
+test-targets: $(TEST_LIST_TARGETS)
+	@ echo [TEST] List Targets
+	@ ./$(TEST_LIST_TARGETS)
+
+# Run test with verbose output
+test-targets-verbose: $(TEST_LIST_TARGETS)
+	@ echo [TEST] List Targets (verbose)
+	@ ./$(TEST_LIST_TARGETS) -v
+
+# Run the upload audio test (requires audio files as arguments)
+test-upload: $(TEST_UPLOAD_AUDIO)
+	@ echo [TEST] Upload Audio
+	@ echo "Usage: ./$(TEST_UPLOAD_AUDIO) [options] <audio_files...>"
+	@ echo "Run manually with audio files: ./$(TEST_UPLOAD_AUDIO) path/to/file.flac"
+
+# Run the session control test (interactive)
+test-session: $(TEST_SESSION_CONTROL)
+	@ echo "[TEST] Session Control (interactive)"
+	@ ./$(TEST_SESSION_CONTROL)
+
+# Run all non-interactive tests
+test-all: test-list test-targets
+
+.PHONY: all clean test-list test-list-verbose test-targets test-targets-verbose test-upload test-session test-all
