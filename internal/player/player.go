@@ -481,20 +481,20 @@ func (p *Player) Stop() error {
 }
 
 // PlayTrack plays a single track using the C library
-// The C library expects WAV files, so we decode directly to WAV
+// The C library supports multiple formats including AIFF, so we decode to AIFF for better metadata support
 func (p *Player) PlayTrack(track *playlist.Track) error {
 	log.Printf("Playing track: %s", track.URL)
 
-	// Fetch and decode to cached WAV file
-	wavPath, err := p.fetchDecodeAndCache(track)
+	// Fetch and decode to cached AIFF file
+	aiffPath, err := p.fetchDecodeAndCache(track)
 	if err != nil {
 		return fmt.Errorf("failed to fetch and decode: %w", err)
 	}
 
-	log.Printf("Using WAV file: %s", wavPath)
+	log.Printf("Using AIFF file: %s", aiffPath)
 
-	// Open WAV file with C library
-	wavFile, err := memoryplay.OpenWavFile(wavPath)
+	// Open AIFF file with C library
+	wavFile, err := memoryplay.OpenWavFile(aiffPath)
 	if err != nil {
 		return fmt.Errorf("failed to open WAV file: %w", err)
 	}
@@ -533,11 +533,11 @@ func (p *Player) PlayTrack(track *playlist.Track) error {
 	// Tag format is "INDEX:TIME:NAME" where TIME is duration in seconds
 	tags, err := p.client.GetTagList()
 	if err == nil && len(tags) > 0 {
-		// Find the tag that matches the current WAV file
+		// Find the tag that matches the current AIFF file
 		// Extract just the filename from the full path for matching
-		wavFilename := wavPath
-		if lastSlash := strings.LastIndex(wavPath, "/"); lastSlash != -1 {
-			wavFilename = wavPath[lastSlash+1:]
+		aiffFilename := aiffPath
+		if lastSlash := strings.LastIndex(aiffPath, "/"); lastSlash != -1 {
+			aiffFilename = aiffPath[lastSlash+1:]
 		}
 
 		// Search through tags to find the matching one
@@ -546,8 +546,8 @@ func (p *Player) PlayTrack(track *playlist.Track) error {
 			if len(tagParts) >= 3 {
 				// tagParts[2] contains the NAME portion
 				tagName := tagParts[2]
-				// Check if the tag name partially matches the WAV filename
-				if strings.Contains(wavFilename, tagName) || strings.Contains(tagName, wavFilename) {
+				// Check if the tag name partially matches the AIFF filename
+				if strings.Contains(aiffFilename, tagName) || strings.Contains(tagName, aiffFilename) {
 					if duration, err := strconv.ParseInt(tagParts[1], 10, 64); err == nil {
 						p.mu.Lock()
 						p.currentTrackDuration = duration
@@ -575,8 +575,8 @@ func (p *Player) backgroundCache(url string) {
 
 	log.Printf("Background cache: starting decode for: %s", url)
 
-	// Decode to cache WAV file
-	_, err := decoder.DecodeToWAVFile(url, cachePath)
+	// Decode to cache AIFF file
+	_, err := decoder.DecodeToAIFFFile(url, cachePath)
 	if err != nil {
 		log.Printf("Background cache: failed to decode %s: %v", url, err)
 		return
@@ -590,23 +590,23 @@ func (p *Player) backgroundCache(url string) {
 	}
 }
 
-// fetchDecodeAndCache fetches and decodes audio directly to a WAV file in the cache
-// Returns the WAV file path
+// fetchDecodeAndCache fetches and decodes audio directly to an AIFF file in the cache
+// Returns the AIFF file path
 func (p *Player) fetchDecodeAndCache(track *playlist.Track) (string, error) {
 	// Get cache path for this track
 	cachePath := p.cache.GetPathForKey(track.URL)
 
 	// Check if already cached
 	if _, err := os.Stat(cachePath); err == nil {
-		log.Printf("Using cached WAV file: %s", cachePath)
+		log.Printf("Using cached AIFF file: %s", cachePath)
 		return cachePath, nil
 	}
 
-	// Decode directly to cache WAV file
+	// Decode directly to cache AIFF file
 	log.Printf("Decoding to cache: %s", track.URL)
-	_, err := decoder.DecodeToWAVFile(track.URL, cachePath)
+	_, err := decoder.DecodeToAIFFFile(track.URL, cachePath)
 	if err != nil {
-		return "", fmt.Errorf("failed to decode to WAV: %w", err)
+		return "", fmt.Errorf("failed to decode to AIFF: %w", err)
 	}
 
 	log.Printf("Decoded successfully to: %s", cachePath)

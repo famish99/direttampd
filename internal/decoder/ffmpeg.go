@@ -79,28 +79,27 @@ func ProbeFormat(source string) (*AudioFormat, error) {
 	}, nil
 }
 
-// DecodeToWAVFile decodes audio to a WAV file at the specified path.
+// DecodeToAIFFFile decodes audio to an AIFF file at the specified path.
 //
-// Note: WAV format has limited metadata support compared to formats like FLAC or MP3.
-// WAV files only support INFO chunks for metadata, which may not preserve all tags.
-// Title, artist, album, etc. may be lost or incomplete in the conversion.
+// Note: AIFF format has better metadata support than WAV.
+// AIFF supports ID3 tags and other metadata formats, which helps preserve
+// title, artist, album, and other tags from the source audio.
 //
 // Returns the audio format.
-func DecodeToWAVFile(source string, outputPath string) (*AudioFormat, error) {
+func DecodeToAIFFFile(source string, outputPath string) (*AudioFormat, error) {
 	// First probe to get native format
 	nativeFormat, err := ProbeFormat(source)
 	if err != nil {
 		return nil, fmt.Errorf("failed to probe audio format: %w", err)
 	}
 
-	// Build ffmpeg command to decode to WAV
-	// Note: -map_metadata attempts to preserve metadata, but WAV format
-	// only supports INFO chunks, so many tags may be lost
+	// Build ffmpeg command to decode to AIFF
+	// AIFF supports better metadata preservation than WAV
 	args := []string{
 		"-i", source,
-		"-f", "wav",
-		"-map_metadata", "0",     // Attempt to preserve metadata (limited by WAV format)
-		"-write_id3v2", "1",      // Try to write ID3v2 tags if possible
+		"-f", "aiff",
+		"-map_metadata", "0",     // Preserve metadata (AIFF supports ID3 tags)
+		"-write_id3v2", "1",      // Write ID3v2 tags
 		"-id3v2_version", "3",    // Use ID3v2.3 for better compatibility
 		"-metadata:s:a:0", "encoder=ffmpeg", // Preserve stream metadata
 		"-y",                     // Overwrite output file

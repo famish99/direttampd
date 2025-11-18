@@ -17,6 +17,7 @@
 
 # Test files
 *.wav
+*.aiff
 *.flac
 
 # Code coverage profiles and other test artifacts
