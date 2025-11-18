@@ -16,7 +16,11 @@ A Go-based audio player that streams to Diretta MemoryPlay targets, with MPD pro
 ## Requirements
 
 - Go 1.21 or later
+- C++ compiler (g++ or clang++)
+- GNU Make
 - `ffmpeg` and `ffprobe` installed and in PATH
+- FLAC development libraries (libFLAC++)
+- Diretta ACQUA and Find libraries (included in MemoryPlayController)
 
 ## Installation
 
@@ -25,12 +29,19 @@ A Go-based audio player that streams to Diretta MemoryPlay targets, with MPD pro
 git clone https://github.com/famish99/direttampd
 cd direttampd
 
-# Build
+# Build the MemoryPlayController C++ shared library
+cd MemoryPlayController
+make -f Makefile.lib
+cd ..
+
+# Build the Go application (uses CGO to link with the C++ library)
 go build -o direttampd ./cmd/direttampd
 
 # Install (optional)
 go install ./cmd/direttampd
 ```
+
+**Note**: The MemoryPlayController library must be built first as it provides the core Diretta protocol implementation and device discovery functionality through CGO bindings.
 
 ## Configuration
 
@@ -160,15 +171,33 @@ Cached files include a 20-byte header:
 ## Architecture
 
 ```
-MPD Client → MPD Server → Player → Decoder (ffmpeg) → Cache → MemoryPlay Client → Diretta Target
-     ↓           ↓                        ↓                ↓
-   mpc      localhost:6600            Playlist      Disk Cache (LRU)
+MPD Client → MPD Server → Player → Decoder (ffmpeg) → Cache → MemoryPlay Client (Go)
+     ↓           ↓                        ↓                ↓              ↓
+   mpc      localhost:6600            Playlist      Disk Cache (LRU)    CGO Bindings
+                                                                           ↓
+                                                          MemoryPlayController (C++)
+                                                          - Diretta protocol
+                                                          - ACQUA TCP (IPv6)
+                                                          - Device discovery
+                                                                           ↓
+                                                              Diretta Audio Device
+                                                                           ↓
+                                                                    Audio Targets
+                                                                (Speakers, DACs, etc.)
 ```
 
 ### Components
 
 - **`internal/mpd`**: MPD protocol server implementation
-- **`internal/memoryplay`**: MemoryPlay protocol client implementation
+- **`internal/memoryplay`**: MemoryPlay protocol client with CGO bindings
+  - `cgo_bindings.go`: C library interface with session management
+  - `client.go`: High-level Go wrapper for device control
+  - `protocol.go`: Diretta wire protocol implementation
+- **`MemoryPlayController/`**: C++ shared library for Diretta protocol
+  - Implements device discovery via IPv6 multicast
+  - ACQUA TCP protocol for audio streaming
+  - FLAC audio format support
+  - Session control (play, pause, seek, status)
 - **`internal/decoder`**: FFmpeg wrapper for audio decoding
 - **`internal/cache`**: LRU disk cache with format headers
 - **`internal/config`**: Configuration management
@@ -182,22 +211,34 @@ MPD Client → MPD Server → Player → Decoder (ffmpeg) → Cache → MemoryPl
 ```
 direttampd/
 ├── cmd/
-│   └── direttampd/          # Main application
+│   └── direttampd/              # Main application
 ├── internal/
-│   ├── cache/               # Disk cache implementation
-│   ├── config/              # Configuration handling
-│   ├── decoder/             # Audio decoding (ffmpeg)
-│   ├── memoryplay/          # MemoryPlay protocol
-│   ├── mpd/                 # MPD protocol server
-│   ├── player/              # Playback coordinator
-│   └── playlist/            # Playlist management
-├── config.example.yaml      # Example configuration
-└── go.mod                   # Go module definition
+│   ├── cache/                   # Disk cache implementation
+│   ├── config/                  # Configuration handling
+│   ├── decoder/                 # Audio decoding (ffmpeg)
+│   ├── memoryplay/              # MemoryPlay protocol & CGO bindings
+│   │   ├── cgo_bindings.go      # C library interface
+│   │   ├── client.go            # High-level client wrapper
+│   │   └── protocol.go          # Diretta wire protocol
+│   ├── mpd/                     # MPD protocol server
+│   ├── player/                  # Playback coordinator
+│   └── playlist/                # Playlist management
+├── MemoryPlayController/        # C++ shared library
+│   ├── lib_memory_play_controller.h    # C API header
+│   ├── lib_memory_play_controller.cpp  # Implementation
+│   ├── Makefile.lib             # Library build system
+│   └── test_*.c                 # Test programs
+├── config.example.yaml          # Example configuration
+└── go.mod                       # Go module definition
 ```
 
 ### Building
 
 ```bash
+# Build C++ library first
+cd MemoryPlayController && make -f Makefile.lib && cd ..
+
+# Build Go application
 go build ./cmd/direttampd
 ```
 
