@@ -1,5 +1,9 @@
 # Direttampd Configuration Example
 
+# MemoryPlay host connection (port is auto-discovered by the C library)
+host:
+  ip: "::1"  # Default: localhost IPv6
+
 # Available MemoryPlay output targets
 targets:
   - name: living-room

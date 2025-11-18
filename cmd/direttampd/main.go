@@ -4,12 +4,11 @@ import (
 	"flag"
 	"fmt"
 	"log"
-	"net"
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
-	"time"
 
 	"github.com/famish99/direttampd/internal/config"
 	"github.com/famish99/direttampd/internal/memoryplay"
@@ -19,9 +18,11 @@ import (
 
 var (
 	configPath  = flag.String("config", getDefaultConfigPath(), "Path to configuration file")
-	host        = flag.String("host", "", "MemoryPlay host IP address with optional port (e.g., host:port, default: ::1:19641)")
+	host        = flag.String("host", "", "MemoryPlay host IP address (default: ::1, port is auto-discovered)")
 	targetName  = flag.String("target", "", "Override preferred target by name")
+	listHosts   = flag.Bool("list-hosts", false, "List available MemoryPlay hosts and exit")
 	listTargets = flag.Bool("list-targets", false, "List available targets from MemoryPlay host and exit")
+	playFile    = flag.String("play", "", "Play a file or URL directly")
 	mpdAddr     = flag.String("mpd-addr", "localhost:6600", "MPD server listen address")
 	daemonMode  = flag.Bool("daemon", false, "Run as MPD server daemon (otherwise play URLs and exit)")
 )
@@ -35,12 +36,30 @@ func main() {
 		log.Fatalf("Failed to load config: %v", err)
 	}
 
+	// Handle list-hosts command
+	if *listHosts {
+		if err := listAvailableHosts(); err != nil {
+			log.Fatalf("Failed to list hosts: %v", err)
+		}
+		return
+	}
+
 	// Handle list-targets command
 	if *listTargets {
-		if err := listAvailableTargets(*host); err != nil {
+		hostIP := *host
+		// If no host specified, use config
+		if hostIP == "" {
+			hostIP = cfg.Host.IP
+		}
+		if err := listAvailableTargets(hostIP); err != nil {
 			log.Fatalf("Failed to list targets: %v", err)
 		}
 		return
+	}
+
+	// Override host if specified
+	if *host != "" {
+		cfg.SetHost(*host)
 	}
 
 	// Override target if specified
@@ -70,14 +89,26 @@ func main() {
 
 	// Direct mode: play URLs from command line
 	urls := flag.Args()
+
+	// Add file from --play flag if specified
+	if *playFile != "" {
+		urls = append([]string{*playFile}, urls...)
+	}
+
 	if len(urls) == 0 {
 		fmt.Fprintf(os.Stderr, "Usage: %s [options] <url1> [url2] ...\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "       %s --play <file|url>\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "\nOptions:\n")
 		flag.PrintDefaults()
 		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  # Play URLs directly\n")
+		fmt.Fprintf(os.Stderr, "  # Play a local file\n")
+		fmt.Fprintf(os.Stderr, "  %s --play /path/to/music.flac\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "  %s --play ./song.mp3\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "\n  # Play remote URLs\n")
+		fmt.Fprintf(os.Stderr, "  %s --play http://stream.example.com/radio.mp3\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  %s http://stream.example.com/radio.mp3\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s file:///music/album/track01.flac file:///music/album/track02.flac\n", os.Args[0])
+		fmt.Fprintf(os.Stderr, "\n  # Play multiple files\n")
+		fmt.Fprintf(os.Stderr, "  %s track01.flac track02.flac track03.flac\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "\n  # Run as MPD server daemon\n")
 		fmt.Fprintf(os.Stderr, "  %s --daemon\n", os.Args[0])
 		fmt.Fprintf(os.Stderr, "  mpc add http://stream.example.com/radio.mp3\n")
@@ -151,58 +182,172 @@ func getDefaultConfigPath() string {
 	return locations[0]
 }
 
-func listAvailableTargets(hostAddr string) error {
-	var hostIP, port string
-
-	// Default to localhost if not specified
-	if hostAddr == "" {
-		hostIP = "::1"
-		port = "19641"
-	} else {
-		// Try to parse host:port
-		parsedHost, parsedPort, err := net.SplitHostPort(hostAddr)
-		if err != nil {
-			// No port specified, use the whole string as host with default port
-			hostIP = hostAddr
-			port = "19641"
-		} else {
-			hostIP = parsedHost
-			port = parsedPort
-		}
+func listAvailableHosts() error {
+	// Initialize the MemoryPlay library
+	if err := memoryplay.InitLibrary(true, false); err != nil {
+		return fmt.Errorf("failed to initialize MemoryPlay library: %w", err)
 	}
+	defer memoryplay.CleanupLibrary()
 
-	fmt.Printf("Connecting to MemoryPlay host at %s:%s...\n", hostIP, port)
-
-	// Create a temporary target to connect to the host
-	target := &memoryplay.Target{
-		IP:        hostIP,
-		Port:      port,
-		Interface: "",
-		Name:      "query",
-	}
-
-	// Create client and connect
-	client := memoryplay.NewClient(target)
-	if err := client.Connect(); err != nil {
-		return fmt.Errorf("failed to connect to MemoryPlay host: %w", err)
-	}
-	defer client.Disconnect()
-
-	// Query target list with 5 second timeout
-	targets, err := client.GetTargetList(5 * time.Second)
+	// Use player discovery function
+	hosts, err := player.DiscoverHosts()
 	if err != nil {
 		return err
 	}
 
 	// Display results
-	if len(targets) == 0 {
-		fmt.Println("No targets available")
-		return nil
+	fmt.Printf("\nFound %d MemoryPlay host(s):\n\n", len(hosts))
+	for i, host := range hosts {
+		fmt.Printf("%d. %s\n", i+1, host.TargetName)
+		fmt.Printf("   IP Address:       %s\n", host.IPAddress)
+		fmt.Printf("   Interface:        %d\n", host.InterfaceNumber)
+		fmt.Printf("   Output:           %s\n", host.OutputName)
+		fmt.Printf("   Is Loopback:      %v\n", host.IsLoopback)
+
+		// Extract just the IP for config usage
+		hostIP := host.IPAddress
+		if idx := strings.Index(hostIP, ","); idx != -1 {
+			hostIP = hostIP[:idx]
+		}
+
+		fmt.Printf("\n   To use this host, run:\n")
+		fmt.Printf("     %s --host %s --list-targets\n", os.Args[0], hostIP)
+		fmt.Println()
 	}
 
-	fmt.Println("\nAvailable targets:")
-	for _, t := range targets {
-		fmt.Printf("  - %s\n", t)
+	return nil
+}
+
+func listAvailableTargets(hostAddr string) error {
+	// Initialize the MemoryPlay library
+	if err := memoryplay.InitLibrary(true, false); err != nil {
+		return fmt.Errorf("failed to initialize MemoryPlay library: %w", err)
+	}
+	defer memoryplay.CleanupLibrary()
+
+	// If no host specified, discover hosts to find one
+	var hostIP string
+	var hostIfNum uint32
+
+	if hostAddr == "" {
+		// Discover hosts and use the first one
+		hosts, err := player.DiscoverHosts()
+		if err != nil {
+			return err
+		}
+
+		// Extract IP and interface from first host
+		hostIP = hosts[0].IPAddress
+		hostIfNum = hosts[0].InterfaceNumber
+
+		// Strip port from host IP if present
+		if idx := strings.Index(hostIP, ","); idx != -1 {
+			hostIP = hostIP[:idx]
+		}
+
+		fmt.Printf("Using discovered host: %s%%%d (%s)\n\n", hostIP, hostIfNum, hosts[0].TargetName)
+	} else {
+		// Use specified host - discover hosts to get interface number
+		hosts, err := player.DiscoverHosts()
+		if err != nil {
+			return err
+		}
+
+		// Find matching host
+		found := false
+		for _, h := range hosts {
+			testIP := h.IPAddress
+			if idx := strings.Index(testIP, ","); idx != -1 {
+				testIP = testIP[:idx]
+			}
+			if testIP == hostAddr {
+				hostIP = hostAddr
+				hostIfNum = h.InterfaceNumber
+				found = true
+				fmt.Printf("Using specified host: %s%%%d (%s)\n\n", hostIP, hostIfNum, h.TargetName)
+				break
+			}
+		}
+
+		if !found {
+			return fmt.Errorf("host %s not found in discovered hosts", hostAddr)
+		}
+	}
+
+	// Use player discovery function to list targets
+	targets, err := player.DiscoverTargets(hostIP, hostIfNum)
+	if err != nil {
+		return err
+	}
+
+	// Display results
+	fmt.Printf("Found %d target(s):\n\n", len(targets))
+	for i, target := range targets {
+		// Parse target info
+		targetIP := target.IPAddress
+		targetPort := "19644"
+		if strings.Contains(targetIP, ",") {
+			parts := strings.SplitN(targetIP, ",", 2)
+			targetIP = parts[0]
+			targetPort = parts[1]
+		}
+
+		fmt.Printf("%d. %s\n", i+1, target.TargetName)
+		fmt.Printf("   IP:        %s\n", targetIP)
+		fmt.Printf("   Port:      %s\n", targetPort)
+		fmt.Printf("   Interface: %d\n", target.InterfaceNumber)
+		fmt.Println()
+	}
+
+	// Load current config
+	cfg, err := config.LoadConfig(*configPath)
+	if err != nil {
+		return fmt.Errorf("failed to load config: %w", err)
+	}
+
+	// Update host configuration with interface number
+	cfg.Host.IP = hostIP
+	cfg.Host.Interface = hostIfNum
+
+	// Add targets to config
+	fmt.Println("Updating configuration...")
+	addedCount := 0
+	for _, target := range targets {
+		// Parse target info
+		targetIP := target.IPAddress
+		targetPort := "19644"
+		if strings.Contains(targetIP, ",") {
+			parts := strings.SplitN(targetIP, ",", 2)
+			targetIP = parts[0]
+			targetPort = parts[1]
+		}
+
+		configTarget := &config.Target{
+			Name:      target.TargetName,
+			IP:        targetIP,
+			Port:      targetPort,
+			Interface: fmt.Sprintf("%d", target.InterfaceNumber),
+		}
+
+		// Check if target already exists
+		if cfg.GetTarget(configTarget.Name) == nil {
+			cfg.AddTarget(*configTarget)
+			addedCount++
+			fmt.Printf("  Added: %s\n", configTarget.Name)
+		} else {
+			fmt.Printf("  Skipped (already exists): %s\n", configTarget.Name)
+		}
+	}
+
+	// Save config (always save to update host config)
+	if err := config.SaveConfig(*configPath, cfg); err != nil {
+		return fmt.Errorf("failed to save config: %w", err)
+	}
+
+	if addedCount > 0 {
+		fmt.Printf("\nSaved host and %d target(s) to %s\n", addedCount, *configPath)
+	} else {
+		fmt.Printf("\nSaved host configuration to %s (no new targets to add)\n", *configPath)
 	}
 
 	return nil

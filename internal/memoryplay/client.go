@@ -1,47 +1,43 @@
 package memoryplay
 
 import (
-	"bufio"
 	"fmt"
-	"io"
-	"net"
-	"strings"
 	"sync"
-	"time"
 )
 
 // Target represents a MemoryPlay audio output target
 type Target struct {
 	IP        string
-	Port      string // Port for MemoryPlayHost connection (default: 19640)
+	Port      string
 	Interface string
 	Name      string
 }
 
-// Client manages connection to a MemoryPlayHost
+// Client manages connection to a MemoryPlayHost using the C library
 type Client struct {
-	target     *Target
-	conn       net.Conn
-	mu         sync.Mutex
-	connected  bool
-	reader     *bufio.Reader
-	writer     *bufio.Writer
+	hostIP    string  // MemoryPlay host IP to connect to
+	target    *Target // Target device for audio output
+	mu        sync.Mutex
+	connected bool
 
-	// Audio format currently being streamed
-	currentFormat *FormatID
+	// C library session handle
+	session *Session
 
 	// Callbacks
 	onStatus func(status string)
 }
 
 // NewClient creates a new MemoryPlay client
-func NewClient(target *Target) *Client {
+// hostIP specifies the MemoryPlay host to connect to (port is auto-discovered by the C library)
+// target specifies the audio output device the host should use
+func NewClient(hostIP string, target *Target) *Client {
 	return &Client{
+		hostIP: hostIP,
 		target: target,
 	}
 }
 
-// Connect establishes connection to the MemoryPlayHost
+// Connect establishes connection to the MemoryPlayHost and selects target
 func (c *Client) Connect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -50,28 +46,43 @@ func (c *Client) Connect() error {
 		return nil
 	}
 
-	// Connect using TCP/IPv6
-	// Default port 19640 is the MemoryPlayHost control port
-	port := "19640"
-	if c.target.Port != "" {
-		port = c.target.Port
-	}
-	addr := fmt.Sprintf("[%s]:%s", c.target.IP, port)
-	conn, err := net.DialTimeout("tcp6", addr, 5*time.Second)
+	// Parse interface number from target interface string
+	// The interface string is typically a number like "0", "1", etc.
+	var interfaceNum uint32
+	fmt.Sscanf(c.target.Interface, "%d", &interfaceNum)
+
+	// Create session to the host
+	session, err := CreateSession(c.hostIP, interfaceNum)
 	if err != nil {
-		return fmt.Errorf("failed to connect to %s: %w", addr, err)
+		return fmt.Errorf("failed to create session to MemoryPlay host: %w", err)
 	}
 
-	c.conn = conn
-	c.reader = bufio.NewReader(conn)
-	c.writer = bufio.NewWriter(conn)
+	c.session = session
 	c.connected = true
 
-	// Send initial connect command
-	msg := NewFrameMessage()
-	msg.AddHeader(HeaderConnect, fmt.Sprintf("%s %s", c.target.IP, c.target.Interface))
+	return nil
+}
 
-	return c.sendFrameMessage(msg)
+// SelectTarget connects the session to the audio output target
+// Should be called AFTER uploading audio data to trigger playback
+func (c *Client) SelectTarget() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.connected || c.session == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	var interfaceNum uint32
+	fmt.Sscanf(c.target.Interface, "%d", &interfaceNum)
+
+	// ConnectTarget expects "IP,PORT" format
+	targetAddr := fmt.Sprintf("%s,%s", c.target.IP, c.target.Port)
+	if err := c.session.ConnectTarget(targetAddr, interfaceNum); err != nil {
+		return fmt.Errorf("failed to connect to target: %w", err)
+	}
+
+	return nil
 }
 
 // Disconnect closes the connection
@@ -84,188 +95,111 @@ func (c *Client) Disconnect() error {
 	}
 
 	c.connected = false
-	if c.conn != nil {
-		return c.conn.Close()
+	if c.session != nil {
+		c.session.Close()
+		c.session = nil
 	}
-	return nil
-}
-
-// sendFrameMessage sends a control message (must hold lock)
-func (c *Client) sendFrameMessage(msg *FrameMessage) error {
-	if !c.connected {
-		return fmt.Errorf("not connected")
-	}
-
-	data := msg.Encode()
-	n, err := c.writer.Write(data)
-	if err != nil {
-		return fmt.Errorf("write failed: %w", err)
-	}
-	if n != len(data) {
-		return io.ErrShortWrite
-	}
-
-	// Flush to ensure data is sent immediately
-	if err := c.writer.Flush(); err != nil {
-		return fmt.Errorf("flush failed: %w", err)
-	}
-
-	return nil
-}
-
-// SendFrameMessage sends a control message (public version)
-func (c *Client) SendFrameMessage(msg *FrameMessage) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if !c.connected {
-		return fmt.Errorf("not connected")
-	}
-
-	data := msg.Encode()
-	n, err := c.writer.Write(data)
-	if err != nil {
-		return fmt.Errorf("write failed: %w", err)
-	}
-	if n != len(data) {
-		return io.ErrShortWrite
-	}
-
-	// Flush to ensure data is sent immediately
-	if err := c.writer.Flush(); err != nil {
-		return fmt.Errorf("flush failed: %w", err)
-	}
-
-	return nil
-}
-
-// SendAudioData sends audio data with format header
-func (c *Client) SendAudioData(format *FormatID, data []byte) error {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if !c.connected {
-		return fmt.Errorf("not connected")
-	}
-
-	// Update current format if changed
-	c.currentFormat = format
-
-	msg := &AudioDataMessage{
-		Format: format,
-		Data:   data,
-	}
-
-	encoded := msg.Encode()
-	n, err := c.writer.Write(encoded)
-	if err != nil {
-		return fmt.Errorf("write failed: %w", err)
-	}
-	if n != len(encoded) {
-		return io.ErrShortWrite
-	}
-
-	// For audio data, we may want to flush periodically rather than every packet
-	// But for now, flush to ensure delivery
-	if err := c.writer.Flush(); err != nil {
-		return fmt.Errorf("flush failed: %w", err)
-	}
-
 	return nil
 }
 
 // Play sends play command
 func (c *Client) Play() error {
-	msg := NewFrameMessage()
-	msg.AddHeader(HeaderPlay, "")
-	return c.SendFrameMessage(msg)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.connected || c.session == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	return c.session.Play()
 }
 
 // Pause sends pause command
 func (c *Client) Pause() error {
-	msg := NewFrameMessage()
-	msg.AddHeader(HeaderPause, "")
-	return c.SendFrameMessage(msg)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.connected || c.session == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	return c.session.Pause()
+}
+
+// sends Quit command
+func (c *Client) Quit() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.connected || c.session == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	return c.session.Quit()
 }
 
 // Seek sends seek command
 func (c *Client) Seek(position string) error {
-	msg := NewFrameMessage()
-	msg.AddHeader(HeaderSeek, position)
-	return c.SendFrameMessage(msg)
-}
-
-// SendTag sends track metadata
-func (c *Client) SendTag(index int, timestamp int64, title string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if !c.connected {
+	if !c.connected || c.session == nil {
 		return fmt.Errorf("not connected")
 	}
 
-	// Tag messages use type 2 (Tag) with data payload containing the title string
-	tagMsg := &TagMessage{
-		Data: []byte(title),
-	}
+	// Parse position as seconds offset
+	var offsetSeconds int64
+	fmt.Sscanf(position, "%d", &offsetSeconds)
 
-	encoded := tagMsg.Encode()
-	n, err := c.writer.Write(encoded)
-	if err != nil {
-		return fmt.Errorf("write failed: %w", err)
-	}
-	if n != len(encoded) {
-		return io.ErrShortWrite
-	}
-
-	// Flush to ensure data is sent immediately
-	if err := c.writer.Flush(); err != nil {
-		return fmt.Errorf("flush failed: %w", err)
-	}
-
-	return nil
+	return c.session.Seek(offsetSeconds)
 }
 
-// SendSilence sends silence buffer for synchronization
-func (c *Client) SendSilence(format *FormatID, durationSec int) error {
-	// Calculate buffer size for silence
-	bytesPerSample := format.BitsPerSample / 8
-	samplesPerSec := format.SampleRate
-	bufferSize := int(bytesPerSample * samplesPerSec * format.Channels) * durationSec
-
-	silence := make([]byte, bufferSize)
-	// PCM silence is zeros
-
-	return c.SendAudioData(format, silence)
-}
-
-// RequestStatus requests current playback status
-func (c *Client) RequestStatus() error {
-	msg := NewFrameMessage()
-	msg.AddHeader(HeaderRequest, RequestStatus)
-	return c.SendFrameMessage(msg)
-}
-
-// ReadResponse reads a response from the host with optional timeout
-// If timeout is 0, no timeout is set (blocking read)
-func (c *Client) ReadResponse(timeout time.Duration) (*FrameMessage, error) {
+// SeekAbsolute seeks to an absolute position in seconds
+func (c *Client) SeekAbsolute(positionSeconds int64) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	if !c.connected {
+	if !c.connected || c.session == nil {
+		return fmt.Errorf("not connected")
+	}
+
+	return c.session.SeekAbsolute(positionSeconds)
+}
+
+// GetPlayStatus returns current playback status
+func (c *Client) GetPlayStatus() (PlaybackStatus, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.connected || c.session == nil {
+		return StatusDisconnected, fmt.Errorf("not connected")
+	}
+
+	return c.session.GetPlayStatus()
+}
+
+// GetCurrentTime returns current playback time in seconds
+func (c *Client) GetCurrentTime() (int64, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.connected || c.session == nil {
+		return 0, fmt.Errorf("not connected")
+	}
+
+	return c.session.GetCurrentTime()
+}
+
+// GetTagList returns the list of tags from the playlist
+func (c *Client) GetTagList() ([]TagInfo, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if !c.connected || c.session == nil {
 		return nil, fmt.Errorf("not connected")
 	}
 
-	// Set read deadline if timeout is specified
-	if timeout > 0 {
-		if err := c.conn.SetReadDeadline(time.Now().Add(timeout)); err != nil {
-			return nil, fmt.Errorf("failed to set read deadline: %w", err)
-		}
-		// Clear deadline after read completes
-		defer c.conn.SetReadDeadline(time.Time{})
-	}
-
-	return ParseFrameMessage(c.reader)
+	return c.session.GetTagList()
 }
 
 // SetStatusCallback sets callback for status updates
@@ -276,83 +210,26 @@ func (c *Client) SetStatusCallback(fn func(status string)) {
 }
 
 // GetTargetList requests and returns the list of available targets from the host
-// The host sends multiple TargetList messages, one per target, in format: "IP IFNO NAME"
-func (c *Client) GetTargetList(timeout time.Duration) ([]string, error) {
-	// Send request
-	msg := NewFrameMessage()
-	msg.AddHeader(HeaderRequest, RequestTargetList)
-	if err := c.SendFrameMessage(msg); err != nil {
-		return nil, fmt.Errorf("failed to send target list request: %w", err)
+func (c *Client) GetTargetList() ([]string, error) {
+	c.mu.Lock()
+	hostIP := c.hostIP
+	c.mu.Unlock()
+
+	var interfaceNum uint32
+	if c.target != nil {
+		fmt.Sscanf(c.target.Interface, "%d", &interfaceNum)
 	}
 
-	// Read multiple responses with timeout
-	// The host sends one TargetList message per available target
-	type result struct {
-		msg *FrameMessage
-		err error
+	targets, err := ListTargets(hostIP, interfaceNum)
+	if err != nil {
+		return nil, err
 	}
 
-	var targets []string
-	deadline := time.Now().Add(timeout)
-	readTimeout := 500 * time.Millisecond // Short timeout between messages
-
-	for {
-		remaining := time.Until(deadline)
-		if remaining < 0 {
-			if len(targets) == 0 {
-				return nil, fmt.Errorf("timeout waiting for target list response")
-			}
-			break
-		}
-
-		// Use shorter timeout for reading individual messages
-		currentTimeout := readTimeout
-		if currentTimeout > remaining {
-			currentTimeout = remaining
-		}
-
-		// Read response with timeout
-		msg, err := c.ReadResponse(currentTimeout)
-		if err != nil {
-			// Check if this is a timeout error
-			if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-				// Timeout is expected when no more messages - return what we got
-				if len(targets) > 0 {
-					return targets, nil
-				}
-				return nil, fmt.Errorf("timeout waiting for target list response")
-			}
-			// If we already got some targets, return them
-			if len(targets) > 0 {
-				return targets, nil
-			}
-			return nil, fmt.Errorf("failed to read target list response: %w", err)
-		}
-
-		// Check if this is a TargetList message by looking in the Headers map
-		if value, ok := msg.Headers[HeaderTargetList]; ok {
-			// Parse format: "IP_ADDRESS INTERFACE_NO NAME"
-			// Replace first space with % for display format: "IP%IFNO NAME"
-			value = strings.TrimSpace(value)
-			if value != "" {
-				parts := strings.SplitN(value, " ", 3)
-				if len(parts) >= 3 {
-					// Format as "IP%IFNO NAME" to match reference implementation
-					formatted := fmt.Sprintf("%s%%%s %s", parts[0], parts[1], parts[2])
-					targets = append(targets, formatted)
-				} else {
-					// Fallback to original format if parsing fails
-					targets = append(targets, value)
-				}
-			}
-			// Continue reading more TargetList messages
-			readTimeout = 500 * time.Millisecond
-			continue
-		} else {
-			// Non-TargetList message means we're done
-			return targets, nil
-		}
+	// Convert to string format expected by callers: "IP%IFNO NAME"
+	result := make([]string, len(targets))
+	for i, t := range targets {
+		result[i] = fmt.Sprintf("%s%%%d %s", t.IPAddress, t.InterfaceNumber, t.TargetName)
 	}
 
-	return targets, nil
+	return result, nil
 }

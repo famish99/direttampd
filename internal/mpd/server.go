@@ -97,6 +97,10 @@ func (s *Server) handleConnection(conn net.Conn) {
 	fmt.Fprintf(conn, "OK MPD 0.23.0\n")
 
 	scanner := bufio.NewScanner(conn)
+	inCommandList := false
+	commandListOk := false // Track if we need list_OK after each command
+	var commandListResponses strings.Builder
+
 	for scanner.Scan() {
 		line := strings.TrimSpace(scanner.Text())
 		if line == "" {
@@ -105,8 +109,51 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 		log.Printf("MPD command: %s", line)
 
+		// Handle command list mode
+		if line == "command_list_begin" {
+			inCommandList = true
+			commandListOk = false
+			commandListResponses.Reset()
+			continue
+		}
+
+		if line == "command_list_ok_begin" {
+			inCommandList = true
+			commandListOk = true
+			commandListResponses.Reset()
+			continue
+		}
+
+		if line == "command_list_end" {
+			if inCommandList {
+				// Send all buffered responses
+				fmt.Fprint(conn, commandListResponses.String())
+				fmt.Fprint(conn, "OK\n")
+				inCommandList = false
+				commandListOk = false
+				commandListResponses.Reset()
+			}
+			continue
+		}
+
+		// Process command
 		response := s.handleCommand(line)
-		fmt.Fprint(conn, response)
+
+		if inCommandList {
+			// Buffer response (strip the final OK)
+			if strings.HasSuffix(response, "OK\n") {
+				response = strings.TrimSuffix(response, "OK\n")
+			}
+			commandListResponses.WriteString(response)
+
+			// For command_list_ok_begin, add list_OK after each command
+			if commandListOk {
+				commandListResponses.WriteString("list_OK\n")
+			}
+		} else {
+			// Send response immediately
+			fmt.Fprint(conn, response)
+		}
 	}
 
 	if err := scanner.Err(); err != nil {
@@ -180,6 +227,12 @@ func (s *Server) cmdAdd(args []string) string {
 	}
 
 	uri := strings.Join(args, " ")
+
+	// Strip surrounding quotes if present (MPD protocol supports quoted strings)
+	if len(uri) >= 2 && uri[0] == '"' && uri[len(uri)-1] == '"' {
+		uri = uri[1 : len(uri)-1]
+	}
+
 	s.player.AddURLs([]string{uri})
 
 	return "OK\n"
@@ -195,7 +248,7 @@ func (s *Server) cmdPlay(args []string) string {
 
 // cmdPause handles the 'pause' command
 func (s *Server) cmdPause(args []string) string {
-	if err := s.player.Stop(); err != nil {
+	if err := s.player.Pause(); err != nil {
 		return fmt.Sprintf("ACK [50@0] {pause} %s\n", err.Error())
 	}
 	return "OK\n"
@@ -234,9 +287,36 @@ func (s *Server) cmdStatus(args []string) string {
 	status.WriteString("consume: 0\n")
 	status.WriteString(fmt.Sprintf("playlist: %d\n", pl.Length()))
 	status.WriteString(fmt.Sprintf("playlistlength: %d\n", pl.Length()))
-	status.WriteString("state: play\n") // Simplified - would track actual state
+
+	// Get actual playback state
+	state := s.player.GetState()
+	var stateStr string
+	switch state {
+	case player.StatePlaying:
+		stateStr = "play"
+	case player.StatePaused:
+		stateStr = "pause"
+	case player.StateStopped:
+		stateStr = "stop"
+	default:
+		stateStr = "stop"
+	}
+	status.WriteString(fmt.Sprintf("state: %s\n", stateStr))
+
 	status.WriteString(fmt.Sprintf("song: %d\n", pl.CurrentIndex()))
 	status.WriteString(fmt.Sprintf("songid: %d\n", pl.CurrentIndex()))
+
+	// Add timing information if available
+	timing := s.player.GetPlaybackTiming()
+	if timing != nil {
+		// Add legacy "time" field for compatibility (format: elapsed:total)
+		status.WriteString(fmt.Sprintf("time: %d:%d\n", int(timing.Elapsed), int(timing.Duration)))
+
+		// MPD protocol uses "elapsed" for current position and "duration" for total length
+		status.WriteString(fmt.Sprintf("elapsed: %d\n", int(timing.Elapsed)))
+		status.WriteString(fmt.Sprintf("duration: %d\n", int(timing.Duration)))
+	}
+
 	status.WriteString("OK\n")
 
 	return status.String()

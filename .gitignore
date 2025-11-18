@@ -7,9 +7,17 @@
 *.dll
 *.so
 *.dylib
+*.d
+*.a
+*.o
 
 # Test binary, built with `go test -c`
 *.test
+*.tar.xz
+
+# Test files
+*.wav
+*.flac
 
 # Code coverage profiles and other test artifacts
 *.out
@@ -28,6 +36,15 @@ go.work.sum
 .env
 
 # Editor/IDE
-# .idea/
+.idea/
+.claude
 # .vscode/
 /direttampd
+/MemoryPlayController/flac/
+/MemoryPlayController/Find/
+/MemoryPlayController/libACQUA_w32-win.lib
+/MemoryPlayController/libACQUA_x64-win.lib
+/MemoryPlayController/test_list_hosts
+/MemoryPlayController/test_list_targets
+/MemoryPlayController/test_session_control
+/MemoryPlayController/test_upload_audio

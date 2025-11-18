@@ -1,3 +1,4 @@
+
 # Direttampd
 
 A Go-based audio player that streams to Diretta MemoryPlay targets, with MPD protocol support, intelligent caching, and native format preservation.

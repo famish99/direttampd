@@ -93,6 +93,54 @@ func (c *DiskCache) keyToPath(key string) string {
 	return filepath.Join(c.cacheDir, hash)
 }
 
+// GetPathForKey returns the filesystem path for a cache key
+// This allows external code to write directly to the cache location
+func (c *DiskCache) GetPathForKey(key string) string {
+	return c.keyToPath(key)
+}
+
+// RegisterFile registers an existing file at the cache path into the cache
+// Should be called after writing a file to the path returned by GetPathForKey
+func (c *DiskCache) RegisterFile(key string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	hash := c.hashKey(key)
+
+	// Check if already exists
+	if entry, exists := c.entries[hash]; exists {
+		c.lru.MoveToFront(entry.element)
+		return nil
+	}
+
+	path := c.keyToPath(key)
+
+	// Get file info
+	info, err := os.Stat(path)
+	if err != nil {
+		return fmt.Errorf("failed to stat cache file: %w", err)
+	}
+
+	fileSize := info.Size()
+
+	// Evict until there's space
+	for c.currentSize+fileSize > c.maxSize && c.lru.Len() > 0 {
+		c.evictOldest()
+	}
+
+	// Add to cache
+	entry := &Entry{
+		Key:  hash,
+		Path: path,
+		Size: fileSize,
+	}
+	entry.element = c.lru.PushFront(entry)
+	c.entries[hash] = entry
+	c.currentSize += fileSize
+
+	return nil
+}
+
 // Get retrieves a cache entry reader with format information
 func (c *DiskCache) Get(key string) (*CachedAudioReader, bool) {
 	c.mu.Lock()

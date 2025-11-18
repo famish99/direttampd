@@ -9,7 +9,10 @@ import (
 
 // Config represents the application configuration
 type Config struct {
-	// MemoryPlay targets
+	// MemoryPlay host connection info
+	Host HostConfig `yaml:"host"`
+
+	// MemoryPlay targets (audio output devices)
 	Targets []Target `yaml:"targets"`
 
 	// Preferred output target name
@@ -22,12 +25,18 @@ type Config struct {
 	Playback PlaybackConfig `yaml:"playback"`
 }
 
+// HostConfig represents MemoryPlay host connection settings
+type HostConfig struct {
+	IP        string `yaml:"ip"`                  // MemoryPlay host IP (default: ::1)
+	Interface uint32 `yaml:"interface,omitempty"` // Network interface number for link-local IPv6
+}
+
 // Target represents a MemoryPlay audio output target
 type Target struct {
 	Name      string `yaml:"name"`
 	IP        string `yaml:"ip"`
-	Port      string `yaml:"port,omitempty"`      // Port for MemoryPlayHost (default: 19640)
-	Interface string `yaml:"interface,omitempty"`
+	Port      string `yaml:"port,omitempty"`      // Target port (default: 19640)
+	Interface string `yaml:"interface,omitempty"` // Network interface number for link-local IPv6
 }
 
 // CacheConfig represents cache settings
@@ -44,6 +53,9 @@ type PlaybackConfig struct {
 // DefaultConfig returns default configuration
 func DefaultConfig() *Config {
 	return &Config{
+		Host: HostConfig{
+			IP: "::1",
+		},
 		Targets:         []Target{},
 		PreferredTarget: "",
 		Cache: CacheConfig{
@@ -145,4 +157,11 @@ func (c *Config) RemoveTarget(name string) error {
 		}
 	}
 	return fmt.Errorf("target not found: %s", name)
+}
+
+// SetHost sets the MemoryPlay host IP address
+func (c *Config) SetHost(ip string) {
+	if ip != "" {
+		c.Host.IP = ip
+	}
 }
