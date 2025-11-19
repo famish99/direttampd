@@ -38,15 +38,16 @@ CXXFLAGS = $(CFLAGS)
 # Linker flags for test executables (static linking)
 LDFLAGS_TEST = -pthread -lstdc++ -lm -static
 
-# Static libraries needed
-STATIC_LIBS = -L./flac/src/libFLAC/.libs -lFLAC -L./flac/src/libFLAC++/.libs -lFLAC++ -L./ -lFind$(ARCH_SUFFIX) -lACQUA$(ARCH_SUFFIX)
+# Static libraries needed (FLAC removed)
+STATIC_LIBS = -L./ -lFind$(ARCH_SUFFIX) -lACQUA$(ARCH_SUFFIX)
 
 # Library sources and objects
 LIB_SRC = lib_memory_play_controller.cpp
 LIB_OBJ = lib_memory_play_controller.o
 
-# WAV support (uses existing WAV.o compiled by main Makefile)
-WAV_OBJ = WAV.o FlacDecode.o
+# WAV support (lib_wav without FLAC dependency)
+WAV_SRC = lib_wav.cpp
+WAV_OBJ = lib_wav.o
 
 # Test programs
 TEST_LIST_HOSTS = test_list_hosts
@@ -80,6 +81,11 @@ $(LIB_A): $(LIB_OBJ) $(WAV_OBJ)
 
 # Compile library source
 $(LIB_OBJ): $(LIB_SRC)
+	@ echo [COMPILE] $<
+	@ $(CXX) $(CXXFLAGS) -c $< -o $@
+
+# Compile WAV library source
+$(WAV_OBJ): $(WAV_SRC)
 	@ echo [COMPILE] $<
 	@ $(CXX) $(CXXFLAGS) -c $< -o $@
 
@@ -126,7 +132,7 @@ $(TEST_SESSION_CONTROL_OBJ): $(TEST_SESSION_CONTROL_SRC) lib_memory_play_control
 # Clean build artifacts
 clean:
 	@ echo [CLEAN] Library and tests
-	@ rm -f $(LIB_SO) $(LIB_A) $(LIB_OBJ)
+	@ rm -f $(LIB_SO) $(LIB_A) $(LIB_OBJ) $(WAV_OBJ)
 	@ rm -f $(TEST_LIST_HOSTS) $(TEST_LIST_HOSTS_OBJ)
 	@ rm -f $(TEST_LIST_TARGETS) $(TEST_LIST_TARGETS_OBJ)
 	@ rm -f $(TEST_UPLOAD_AUDIO) $(TEST_UPLOAD_AUDIO_OBJ)

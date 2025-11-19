@@ -9,15 +9,10 @@
 #include <filesystem>
 
 #include <Diretta/Find>
-#include <Diretta/SysLog>
 #include <ACQUA/TCPV6>
-#if __has_include("../MemoryPlayHost/MemoryPlayControll.hpp")
-	#include "../MemoryPlayHost/MemoryPlayControll.hpp"
-#else
-	#include "MemoryPlayControll.hpp"
-#endif
+#include "lib_memory_play_client.hpp"
 
-#include "WAV.hpp"
+#include "lib_wav.hpp"
 
 using namespace std;
 using namespace ACQUA;
@@ -39,49 +34,41 @@ static int receiveMessages(
     FrameHandler handleFrame,
     int timeoutMs = 500
 ) {
-    Clock lastrecv = Clock::now();
+    Clock lastRecv = Clock::now();
 
     while (true) {
-//        cout << "starting client wait " << lastrecv.getMilliSeconds() << endl;
-        WAIT_CODE wi = client.wait(Clock::MilliSeconds(100));
+        WAIT_CODE waitCode = client.wait(Clock::MilliSeconds(100));
 
-        if (wi == WAIT_CODE::ERROR) {
-            SysLog::Error << "Socket Error";
+        if (waitCode == WAIT_CODE::ERROR) {
             return MPC_ERROR_CONNECTION;
         }
 
-        if (wi == WAIT_CODE::TIMEOUT) {
-            if (Clock::now() - lastrecv >= Clock::MilliSeconds(timeoutMs)) {
-//                cout << "break" << endl;
+        if (waitCode == WAIT_CODE::TIMEOUT) {
+            if (Clock::now() - lastRecv >= Clock::MilliSeconds(timeoutMs)) {
                 return MPC_ERROR_TIMEOUT;
             }
-//            cout << "continue" << endl;
             continue;
         }
 
-        if (wi == WAIT_CODE::WAKEUP) {
-            MemoryPlayControll::ReceiveMessage rcvBuf;
-            if (!client.receive(rcvBuf)) {
-                SysLog::Error << "Socket Error";
+        if (waitCode == WAIT_CODE::WAKEUP) {
+            MemoryPlayClient::ReceiveMessage receiveBuffer;
+            if (!client.receive(receiveBuffer)) {
                 return MPC_ERROR_CONNECTION;
             }
 
-            while (rcvBuf.checkFrame()) {
-//                SysLog::Info << "FrameType : " << rcvBuf.getType();
+            while (receiveBuffer.checkFrame()) {
 
-                if (rcvBuf.getType() == 1) {
-                    MemoryPlayControll::ReceiveMessageFrames frames(rcvBuf.getFramePayload());
-                    for (const auto& i : frames) {
-                        SysLog::Debug << "GetMessage " << i.first << "=" << i.second;
-//                        cout << "GetMessage " << i.first << "=" << i.second << endl;
-                        lastrecv = Clock::now();
-                        if (handleFrame(i.first, i.second)) {
+                if (receiveBuffer.getType() == 1) {
+                    MemoryPlayClient::ReceiveMessageFrames frames(receiveBuffer.getFramePayload());
+                    for (const auto& frame : frames) {
+                        lastRecv = Clock::now();
+                        if (handleFrame(frame.first, frame.second)) {
                             return MPC_SUCCESS;
                         }
                     }
                 }
 
-                rcvBuf.next();
+                receiveBuffer.next();
             }
         }
     }
@@ -95,19 +82,16 @@ public:
     ControlSession() : connected(false) {}
 
     bool open(const char* host_address, uint32_t interface_number) {
-        if (!connectadd.set_str(host_address)) {
-            SysLog::Error << "Invalid host address";
+        if (!connectAddress.set_str(host_address)) {
             return false;
         }
-        connectadd.set_ifno(interface_number);
+        connectAddress.set_ifno(interface_number);
 
         if (!client.open(true)) {
-            SysLog::Error << "Socket Open Error";
             return false;
         }
 
-        if (!client.connect(connectadd)) {
-            SysLog::Error << "Host Connect Error " << client.Errcode;
+        if (!client.connect(connectAddress)) {
             return false;
         }
 
@@ -129,14 +113,12 @@ public:
             return MPC_ERROR_CONNECTION;
         }
 
-        MemoryPlayControll::SnedMessageFrames header;
+        MemoryPlayClient::SendMessageFrames header;
         stringstream ss;
         ss << target_address << " " << interface_number;
         header.addHeader("Connect", ss.str());
-//        cout << "Connecting to: " << ss.str() << endl;
 
         if (!client.send(header)) {
-            SysLog::Error << "Send Error";
             return MPC_ERROR_CONNECTION;
         }
 
@@ -148,11 +130,10 @@ public:
             return MPC_ERROR_CONNECTION;
         }
 
-        MemoryPlayControll::SnedMessageFrames header;
+        MemoryPlayClient::SendMessageFrames header;
         header.addHeader("Play", "");
 
         if (!client.send(header)) {
-            SysLog::Error << "Send Error";
             return MPC_ERROR_CONNECTION;
         }
 
@@ -164,11 +145,10 @@ public:
             return MPC_ERROR_CONNECTION;
         }
 
-        MemoryPlayControll::SnedMessageFrames header;
+        MemoryPlayClient::SendMessageFrames header;
         header.addHeader("Pause", "");
 
         if (!client.send(header)) {
-            SysLog::Error << "Send Error";
             return MPC_ERROR_CONNECTION;
         }
 
@@ -180,7 +160,7 @@ public:
             return MPC_ERROR_CONNECTION;
         }
 
-        MemoryPlayControll::SnedMessageFrames header;
+        MemoryPlayClient::SendMessageFrames header;
         stringstream ss;
         if (offset_seconds > 0) {
             ss << "+" << offset_seconds;
@@ -190,7 +170,6 @@ public:
         header.addHeader("Seek", ss.str());
 
         if (!client.send(header)) {
-            SysLog::Error << "Send Error";
             return MPC_ERROR_CONNECTION;
         }
 
@@ -202,11 +181,10 @@ public:
             return MPC_ERROR_CONNECTION;
         }
 
-        MemoryPlayControll::SnedMessageFrames header;
+        MemoryPlayClient::SendMessageFrames header;
         header.addHeader("Seek", "Front");
 
         if (!client.send(header)) {
-            SysLog::Error << "Send Error";
             return MPC_ERROR_CONNECTION;
         }
 
@@ -218,13 +196,12 @@ public:
             return MPC_ERROR_CONNECTION;
         }
 
-        MemoryPlayControll::SnedMessageFrames header;
+        MemoryPlayClient::SendMessageFrames header;
         stringstream ss;
         ss << position_seconds;  // No + or - prefix, just the absolute position
         header.addHeader("Seek", ss.str());
 
         if (!client.send(header)) {
-            SysLog::Error << "Send Error";
             return MPC_ERROR_CONNECTION;
         }
 
@@ -236,11 +213,10 @@ public:
             return MPC_ERROR_CONNECTION;
         }
 
-        MemoryPlayControll::SnedMessageFrames header;
+        MemoryPlayClient::SendMessageFrames header;
         header.addHeader("Seek", "Quit");
 
         if (!client.send(header)) {
-            SysLog::Error << "Send Error";
             return MPC_ERROR_CONNECTION;
         }
 
@@ -255,10 +231,9 @@ public:
         *status = MPC_STATUS_DISCONNECTED;
 
         // Request status from host
-        MemoryPlayControll::SnedMessageFrames header;
+        MemoryPlayClient::SendMessageFrames header;
         header.addHeader("Request", "Status");
         if (!client.send(header)) {
-            SysLog::Error << "Send Error";
             return MPC_ERROR_CONNECTION;
         }
 
@@ -294,10 +269,9 @@ public:
         *time_seconds = -1;
 
         // Request status from host
-        MemoryPlayControll::SnedMessageFrames header;
+        MemoryPlayClient::SendMessageFrames header;
         header.addHeader("Request", "Status");
         if (!client.send(header)) {
-            SysLog::Error << "Send Error";
             return MPC_ERROR_CONNECTION;
         }
 
@@ -332,10 +306,9 @@ public:
         tags.clear();
 
         // Request status from host
-        MemoryPlayControll::SnedMessageFrames header;
+        MemoryPlayClient::SendMessageFrames header;
         header.addHeader("Request", "Status");
         if (!client.send(header)) {
-            SysLog::Error << "Send Error";
             return MPC_ERROR_CONNECTION;
         }
 
@@ -360,7 +333,7 @@ public:
 private:
 
     TCPV6Client client;
-    IPAddress connectadd;
+    IPAddress connectAddress;
     bool connected;
 };
 
@@ -377,19 +350,6 @@ int mpc_init(const MPCConfig* config) {
         // Default configuration
         g_lib_state.logging_enabled = true;
         g_lib_state.verbose_mode = false;
-    }
-
-    // Initialize Diretta logging system
-    if (g_lib_state.logging_enabled) {
-        SysLogDiretta::initialize(ACQUA::SysLog::local0, DIRETTA::SyslogPortHost, g_lib_state.logging_enabled);
-
-        if (g_lib_state.verbose_mode) {
-            SysLogDiretta::changeLevel(SysLog::Debug, DIRETTA::SyslogPortHost);
-        } else {
-            SysLogDiretta::changeLevel(SysLog::Info, DIRETTA::SyslogPortHost);
-        }
-    } else {
-        SysLogDiretta::initialize(ACQUA::SysLog::local0, DIRETTA::SyslogPortHost, false);
     }
 
     g_lib_state.initialized = true;
@@ -414,35 +374,31 @@ int mpc_list_hosts(MPCHostList** host_list) {
         mpc_init(nullptr);
     }
 
-    // Set up Find configuration (from lines 365-368 of original code)
-    Find::Setting fs;
-    fs.Name = "MemoryPlayController";
-    fs.ProductID = 0;
-    fs.Loopback = true;
+    // Set up Find configuration
+    Find::Setting findSettings;
+    findSettings.Name = "MemoryPlayController";
+    findSettings.ProductID = 0;
+    findSettings.Loopback = true;
 
-    // Create and open the Find socket (lines 370-374)
-    Find find(fs);
+    // Create and open the Find socket
+    Find find(findSettings);
     if (!find.open()) {
-        SysLog::Error << "Socket Open Error";
         return MPC_ERROR_SOCKET_OPEN;
     }
 
-    // Find targets (lines 375-384)
-    Find::TargetResalts res;
-    Find::PortResalts pres;
+    // Find targets
+    Find::TargetResalts targetResults;
+    Find::PortResalts portResults;
 
-    if (!find.findTarget(res)) {
-        SysLog::Error << "findTarget1 Error";
+    if (!find.findTarget(targetResults)) {
         return MPC_ERROR_FIND_TARGET;
     }
 
-    if (!find.findTarget(res, pres, Find::AUDIO_MEMORY)) {
-        SysLog::Error << "findTarget2 Error";
+    if (!find.findTarget(targetResults, portResults, Find::AUDIO_MEMORY)) {
         return MPC_ERROR_FIND_TARGET;
     }
 
-    if (pres.empty()) {
-        SysLog::Error << "Can not found MemoryPlayHost";
+    if (portResults.empty()) {
         return MPC_ERROR_NO_HOSTS_FOUND;
     }
 
@@ -452,36 +408,36 @@ int mpc_list_hosts(MPCHostList** host_list) {
         return MPC_ERROR_MEMORY;
     }
 
-    list->count = pres.size();
+    list->count = portResults.size();
     list->hosts = (MPCHostInfo*)calloc(list->count, sizeof(MPCHostInfo));
     if (!list->hosts) {
         free(list);
         return MPC_ERROR_MEMORY;
     }
 
-    // Populate the host list (adapted from lines 396-403)
+    // Populate the host list
     size_t idx = 0;
-    for (const auto& r : pres) {
+    for (const auto& portResult : portResults) {
         MPCHostInfo* host = &list->hosts[idx];
 
         // Get IP address string
         string addr_str;
-        r.first.get_str(addr_str);
+        portResult.first.get_str(addr_str);
         strncpy(host->ip_address, addr_str.c_str(), sizeof(host->ip_address) - 1);
         host->ip_address[sizeof(host->ip_address) - 1] = '\0';
 
         // Get interface number
-        host->interface_number = r.first.get_ifno();
+        host->interface_number = portResult.first.get_ifno();
 
         // Get target and output names
-        strncpy(host->target_name, r.second.targetName.c_str(), sizeof(host->target_name) - 1);
+        strncpy(host->target_name, portResult.second.targetName.c_str(), sizeof(host->target_name) - 1);
         host->target_name[sizeof(host->target_name) - 1] = '\0';
 
-        strncpy(host->output_name, r.second.outputName.c_str(), sizeof(host->output_name) - 1);
+        strncpy(host->output_name, portResult.second.outputName.c_str(), sizeof(host->output_name) - 1);
         host->output_name[sizeof(host->output_name) - 1] = '\0';
 
         // Check if loopback
-        host->is_loopback = r.first.is_loopback();
+        host->is_loopback = portResult.first.is_loopback();
 
         idx++;
     }
@@ -512,33 +468,27 @@ int mpc_list_targets(const char* host_address, uint32_t interface_number, MPCTar
     }
 
     // Parse the host address
-    IPAddress connectadd;
-    if (!connectadd.set_str(host_address)) {
-        SysLog::Error << "Invalid host address";
+    IPAddress connectAddress;
+    if (!connectAddress.set_str(host_address)) {
         return MPC_ERROR_INVALID_PARAM;
     }
-    connectadd.set_ifno(interface_number);
+    connectAddress.set_ifno(interface_number);
 
-    // Open TCP client socket (from lines 429-434)
+    // Open TCP client socket
     TCPV6Client client;
     if (!client.open(true)) {
-        SysLog::Error << "Socket Open Error";
         return MPC_ERROR_SOCKET_OPEN;
     }
 
-    // Connect to the host (from lines 438-441)
-    if (!client.connect(connectadd)) {
-        SysLog::Error << "Host Connect Error " << client.Errcode;
+    // Connect to the host
+    if (!client.connect(connectAddress)) {
         return MPC_ERROR_CONNECTION;
     }
 
-    SysLog::Notice << "Host Connect";
-
     // Send target list request (from lines 664-668)
-    MemoryPlayControll::SnedMessageFrames header;
+    MemoryPlayClient::SendMessageFrames header;
     header.addHeader("Request", "TargetList");
     if (!client.send(header)) {
-        SysLog::Error << "Send Error";
         return MPC_ERROR_CONNECTION;
     }
 
@@ -632,14 +582,12 @@ int mpc_wav_open(const char* filename, MPCWavHandle* handle) {
 
         if (!wav->open(path, true)) {
             delete wav;
-            SysLog::Error << "Failed to open audio file: " << filename;
             return MPC_ERROR_INVALID_PARAM;
         }
 
         *handle = (MPCWavHandle)wav;
         return MPC_SUCCESS;
     } catch (...) {
-        SysLog::Error << "Exception opening WAV file";
         return MPC_ERROR_UNKNOWN;
     }
 }
@@ -659,11 +607,18 @@ int mpc_wav_get_format(MPCWavHandle handle, MPCFormatHandle* format) {
 
     try {
         WAV* wav = (WAV*)handle;
-        FormatConfigure* fmt = new FormatConfigure(wav->getFmt());
+        FormatConfigure* fmt = new FormatConfigure(wav->getFormat());
         *format = (MPCFormatHandle)fmt;
         return MPC_SUCCESS;
     } catch (...) {
         return MPC_ERROR_UNKNOWN;
+    }
+}
+
+void mpc_free_format(MPCFormatHandle format) {
+    if (format) {
+        FormatConfigure* fmt = (FormatConfigure*)format;
+        delete fmt;
     }
 }
 
@@ -701,182 +656,173 @@ int mpc_upload_audio(const char* host_address,
     }
 
     // Parse the host address
-    IPAddress connectadd;
-    if (!connectadd.set_str(host_address)) {
-        SysLog::Error << "Invalid host address";
+    IPAddress connectAddress;
+    if (!connectAddress.set_str(host_address)) {
         return MPC_ERROR_INVALID_PARAM;
     }
-    connectadd.set_ifno(interface_number);
+    connectAddress.set_ifno(interface_number);
 
     // Open TCP client socket
     TCPV6Client client;
     if (!client.open(true)) {
-        SysLog::Error << "Socket Open Error";
         return MPC_ERROR_SOCKET_OPEN;
     }
 
     // Connect to the host
-    if (!client.connect(connectadd)) {
-        SysLog::Error << "Host Connect Error " << client.Errcode;
+    if (!client.connect(connectAddress)) {
         return MPC_ERROR_CONNECTION;
     }
 
     // Get the format
-    FormatConfigure* wavformat = (FormatConfigure*)format;
-    FormatID indef = *wavformat;
+    FormatConfigure* wavFormat = (FormatConfigure*)format;
+    FormatID formatId = *wavFormat;
 
-    // Response check lambda
-    auto rev_check = [&](size_t tcount) -> bool {
+    // Wait for acknowledgment of data transfer
+    auto waitForAcknowledgment = [&](size_t transferCount) -> bool {
         while (true) {
-            WAIT_CODE wi = client.wait(Clock::Seconds(2));
-            if (wi == WAIT_CODE::ERROR) {
+            WAIT_CODE waitCode = client.wait(Clock::Seconds(2));
+            if (waitCode == WAIT_CODE::ERROR) {
                 return false;
             }
-            if (wi == WAIT_CODE::WAKEUP) {
-                MemoryPlayControll::ReceiveMessage rcvBuf;
-                client.receive(rcvBuf);
-                while (rcvBuf.checkFrame()) {
-                    if (rcvBuf.getType() == 1) {
-                        MemoryPlayControll::ReceiveMessageFrames frames(rcvBuf.getFramePayload());
-                        for (const auto& i : frames) {
-                            if (i.first == "DataStack" || i.first == "DataTag") {
-                                if (tcount == (size_t)atoll(i.second.c_str()))
+            if (waitCode == WAIT_CODE::WAKEUP) {
+                MemoryPlayClient::ReceiveMessage receiveBuffer;
+                client.receive(receiveBuffer);
+                while (receiveBuffer.checkFrame()) {
+                    if (receiveBuffer.getType() == 1) {
+                        MemoryPlayClient::ReceiveMessageFrames frames(receiveBuffer.getFramePayload());
+                        for (const auto& frame : frames) {
+                            if (frame.first == "DataStack" || frame.first == "DataTag") {
+                                if (transferCount == (size_t)atoll(frame.second.c_str()))
                                     return true;
                             }
                         }
                     }
-                    rcvBuf.next();
+                    receiveBuffer.next();
                 }
                 continue;
             }
             break;
         }
-        SysLog::Error << "Timeout Data";
         return false;
     };
 
     // Send initial format and mute data
-    MemoryPlayControll::SnedMessageData sdata(false);
-    size_t tCount = 0;
-    sdata.addData(BufferCS(reinterpret_cast<uint8_t*>(&indef), sizeof(indef)));
-    client.send(sdata);
-    sdata.clear();
+    MemoryPlayClient::SendMessageData sendData(false);
+    size_t transferCount = 0;
+    sendData.addData(BufferCS(reinterpret_cast<uint8_t*>(&formatId), sizeof(formatId)));
+    client.send(sendData);
+    sendData.clear();
 
-    Buffer buf;
-    for (int a = 0; a < FILL_TIME; ++a) {
-        buf.resize(wavformat->get1secSize());
-        buf.fill(wavformat->getMuteByte());
-        sdata.addData(BufferCS(reinterpret_cast<uint8_t*>(&indef), sizeof(indef)));
-        sdata.addData(buf);
-        if (!client.send(sdata)) {
-            SysLog::Error << "Socket Error";
+    Buffer buffer;
+    for (int i = 0; i < FILL_TIME; ++i) {
+        buffer.resize(wavFormat->get1secSize());
+        buffer.fill(wavFormat->getMuteByte());
+        sendData.addData(BufferCS(reinterpret_cast<uint8_t*>(&formatId), sizeof(formatId)));
+        sendData.addData(buffer);
+        if (!client.send(sendData)) {
             return MPC_ERROR_CONNECTION;
         }
-        ++tCount;
-        sdata.clear();
-        if (!rev_check(tCount)) {
+        ++transferCount;
+        sendData.clear();
+        if (!waitForAcknowledgment(transferCount)) {
             return MPC_ERROR_TIMEOUT;
         }
     }
 
     // Process WAV files in provided order
-    WAV::ReadRese rest(*wavformat);
-    buf.clear();
+    WAV::ReadRest rest(*wavFormat);
+    buffer.clear();
 
     for (size_t i = 0; i < wav_count; ++i) {
         WAV* wav = (WAV*)wav_handles[i];
 
         while (!wav->is_empty()) {
-            Buffer tmp;
-            wav->read(tmp, wavformat->get1secSize() - buf.size(), rest);
-            if (tmp.empty())
+            Buffer tempBuffer;
+            if (!wav->read(tempBuffer, wavFormat->get1secSize() - buffer.size(), rest)) {
+                return MPC_ERROR_UNKNOWN;
+            }
+            if (tempBuffer.empty())
                 break;
 
-            buf.insert(buf.end(), tmp.begin(), tmp.end());
-            if (buf.size() >= wavformat->get1secSize()) {
-                sdata.addData(BufferCS(reinterpret_cast<uint8_t*>(&indef), sizeof(indef)));
-                sdata.addData(buf);
-                if (!client.send(sdata)) {
-                    SysLog::Error << "Socket Error";
+            buffer.insert(buffer.end(), tempBuffer.begin(), tempBuffer.end());
+            if (buffer.size() >= wavFormat->get1secSize()) {
+                sendData.addData(BufferCS(reinterpret_cast<uint8_t*>(&formatId), sizeof(formatId)));
+                sendData.addData(buffer);
+                if (!client.send(sendData)) {
                     return MPC_ERROR_CONNECTION;
                 }
-                ++tCount;
-                sdata.clear();
-                if (!rev_check(tCount)) {
+                ++transferCount;
+                sendData.clear();
+                if (!waitForAcknowledgment(transferCount)) {
                     return MPC_ERROR_TIMEOUT;
                 }
-                buf.clear();
+                buffer.clear();
             }
         }
 
-        if (!buf.empty()) {
-            sdata.addData(BufferCS(reinterpret_cast<uint8_t*>(&indef), sizeof(indef)));
-            sdata.addData(buf);
-            if (!client.send(sdata)) {
-                SysLog::Error << "Socket Error";
+        if (!buffer.empty()) {
+            sendData.addData(BufferCS(reinterpret_cast<uint8_t*>(&formatId), sizeof(formatId)));
+            sendData.addData(buffer);
+            if (!client.send(sendData)) {
                 return MPC_ERROR_CONNECTION;
             }
-            ++tCount;
-            sdata.clear();
-            if (!rev_check(tCount)) {
+            ++transferCount;
+            sendData.clear();
+            if (!waitForAcknowledgment(transferCount)) {
                 return MPC_ERROR_TIMEOUT;
             }
-            buf.clear();
+            buffer.clear();
         }
 
         // Send tag
-        MemoryPlayControll::SnedMessageData tdata(true);
-        tdata.addString(wav->title());
-        if (!client.send(tdata)) {
-            SysLog::Error << "Socket Error";
+        MemoryPlayClient::SendMessageData tagData(true);
+        tagData.addString(wav->title());
+        if (!client.send(tagData)) {
             return MPC_ERROR_CONNECTION;
         }
-        if (!rev_check(tCount)) {
+        if (!waitForAcknowledgment(transferCount)) {
             return MPC_ERROR_TIMEOUT;
         }
     }
 
     // Send final rest data
-    rest.final(buf);
-    if (!buf.empty()) {
-        sdata.addData(BufferCS(reinterpret_cast<uint8_t*>(&indef), sizeof(indef)));
-        sdata.addData(buf);
-        if (!client.send(sdata)) {
-            SysLog::Error << "Socket Error";
+    rest.final(buffer);
+    if (!buffer.empty()) {
+        sendData.addData(BufferCS(reinterpret_cast<uint8_t*>(&formatId), sizeof(formatId)));
+        sendData.addData(buffer);
+        if (!client.send(sendData)) {
             return MPC_ERROR_CONNECTION;
         }
-        ++tCount;
-        sdata.clear();
-        if (!rev_check(tCount)) {
+        ++transferCount;
+        sendData.clear();
+        if (!waitForAcknowledgment(transferCount)) {
             return MPC_ERROR_TIMEOUT;
         }
-        buf.clear();
+        buffer.clear();
     }
 
     // Send loop tag if requested
     if (loop_mode) {
-        MemoryPlayControll::SnedMessageData tdata(true);
-        tdata.addString("@@Diretta-TAG-LOOP@@");
-        if (!client.send(tdata)) {
-            SysLog::Error << "Socket Error";
+        MemoryPlayClient::SendMessageData tagData(true);
+        tagData.addString("@@Diretta-TAG-LOOP@@");
+        if (!client.send(tagData)) {
             return MPC_ERROR_CONNECTION;
         }
-        if (!rev_check(tCount)) {
+        if (!waitForAcknowledgment(transferCount)) {
             return MPC_ERROR_TIMEOUT;
         }
 
-        for (int a = 0; a < FILL_TIME; ++a) {
-            buf.resize(wavformat->get1secSize());
-            buf.fill(wavformat->getMuteByte());
-            sdata.addData(BufferCS(reinterpret_cast<uint8_t*>(&indef), sizeof(indef)));
-            sdata.addData(buf);
-            if (!client.send(sdata)) {
-                SysLog::Error << "Socket Error";
+        for (int i = 0; i < FILL_TIME; ++i) {
+            buffer.resize(wavFormat->get1secSize());
+            buffer.fill(wavFormat->getMuteByte());
+            sendData.addData(BufferCS(reinterpret_cast<uint8_t*>(&formatId), sizeof(formatId)));
+            sendData.addData(buffer);
+            if (!client.send(sendData)) {
                 return MPC_ERROR_CONNECTION;
             }
-            ++tCount;
-            sdata.clear();
-            if (!rev_check(tCount)) {
+            ++transferCount;
+            sendData.clear();
+            if (!waitForAcknowledgment(transferCount)) {
                 return MPC_ERROR_TIMEOUT;
             }
         }
@@ -884,29 +830,27 @@ int mpc_upload_audio(const char* host_address,
 
     // Send quit tag
     {
-        MemoryPlayControll::SnedMessageData tdata(true);
-        tdata.addString("@@Diretta-TAG-QUIT@@");
-        if (!client.send(tdata)) {
-            SysLog::Error << "Socket Error";
+        MemoryPlayClient::SendMessageData tagData(true);
+        tagData.addString("@@Diretta-TAG-QUIT@@");
+        if (!client.send(tagData)) {
             return MPC_ERROR_CONNECTION;
         }
-        if (!rev_check(tCount)) {
+        if (!waitForAcknowledgment(transferCount)) {
             return MPC_ERROR_TIMEOUT;
         }
     }
 
-    for (int a = 0; a < FILL_TIME; ++a) {
-        buf.resize(wavformat->get1secSize());
-        buf.fill(wavformat->getMuteByte());
-        sdata.addData(BufferCS(reinterpret_cast<uint8_t*>(&indef), sizeof(indef)));
-        sdata.addData(buf);
-        if (!client.send(sdata)) {
-            SysLog::Error << "Socket Error";
+    for (int i = 0; i < FILL_TIME; ++i) {
+        buffer.resize(wavFormat->get1secSize());
+        buffer.fill(wavFormat->getMuteByte());
+        sendData.addData(BufferCS(reinterpret_cast<uint8_t*>(&formatId), sizeof(formatId)));
+        sendData.addData(buffer);
+        if (!client.send(sendData)) {
             return MPC_ERROR_CONNECTION;
         }
-        ++tCount;
-        sdata.clear();
-        if (!rev_check(tCount)) {
+        ++transferCount;
+        sendData.clear();
+        if (!waitForAcknowledgment(transferCount)) {
             return MPC_ERROR_TIMEOUT;
         }
     }
@@ -936,7 +880,6 @@ int mpc_session_create(const char* host_address,
         *session = (MPCSessionHandle)sess;
         return MPC_SUCCESS;
     } catch (...) {
-        SysLog::Error << "Exception creating session";
         return MPC_ERROR_UNKNOWN;
     }
 }
@@ -1099,7 +1042,9 @@ const char* mpc_error_string(int error_code) {
             return "Operation timed out";
         case MPC_ERROR_MEMORY:
             return "Memory allocation failed";
-        default:
+        case MPC_ERROR_UNKNOWN:
             return "Unknown error";
+        default:
+            return "Unrecognized error code";
     }
 }

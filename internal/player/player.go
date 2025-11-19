@@ -505,6 +505,7 @@ func (p *Player) PlayTrack(track *playlist.Track) error {
 	if err != nil {
 		return fmt.Errorf("failed to get format: %w", err)
 	}
+	defer memoryplay.FreeFormat(formatHandle)
 
 	// Upload audio to MemoryPlay host
 	log.Printf("Uploading audio to MemoryPlay host...")
