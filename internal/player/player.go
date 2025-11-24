@@ -3,8 +3,6 @@ package player
 import (
 	"fmt"
 	"log"
-	"os"
-	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -32,6 +30,9 @@ type Player struct {
 	targetIf   uint32
 	targetName string
 
+	// Client configuration
+	useNative bool // Use native Go implementation instead of CGo
+
 	// Playback state
 	playing bool
 	paused  bool
@@ -40,6 +41,9 @@ type Player struct {
 	// Current track timing info
 	currentTrackDuration   int64 // Duration in seconds
 	lastRemainingTime      int64   // Last known elapsed time in seconds (cached from polling)
+
+	// Subsystem change notification callback (e.g., for MPD idle notifications)
+	notifySubsystem func(subsystem string)
 }
 
 // DiscoverHosts discovers all available MemoryPlay hosts.
@@ -158,7 +162,7 @@ func DiscoverAndSelectTarget(hostIP string, hostIfNum uint32, cfg *config.Config
 //   2. Upload audio data using the host info
 //   3. Connect() - establish the control session
 //   4. SelectTarget() - connect to the target and start playback
-func NewPlayer(cfg *config.Config) (*Player, error) {
+func NewPlayer(cfg *config.Config, useNative bool) (*Player, error) {
 	// Initialize the MemoryPlay C library
 	if err := memoryplay.InitLibrary(true, false); err != nil {
 		return nil, fmt.Errorf("failed to initialize MemoryPlay library: %w", err)
@@ -236,20 +240,30 @@ func NewPlayer(cfg *config.Config) (*Player, error) {
 	// NOTE: We don't create the client yet - it will be created when Connect() is called
 	// This allows for the proper sequence: discovery/config -> upload -> connect
 	return &Player{
-		config:          cfg,
-		client:          nil, // Client created lazily in Connect()
-		cache:           c,
-		pl:              playlist.NewPlaylist(),
-		hostIP:          hostIP,
-		hostIfNum:       hostIfNum,
-		targetIP:        targetIP,
-		targetPort:      targetPort,
-		targetIf:        targetIf,
-		targetName:      targetName,
-		playing:         false,
-		stopped:         false,
+		config:            cfg,
+		client:            nil, // Client created lazily in Connect()
+		cache:             c,
+		pl:                playlist.NewPlaylist(),
+		hostIP:            hostIP,
+		hostIfNum:         hostIfNum,
+		targetIP:          targetIP,
+		targetPort:        targetPort,
+		targetIf:          targetIf,
+		targetName:        targetName,
+		useNative:         useNative,
+		playing:           false,
+		stopped:           false,
 		lastRemainingTime: -1, // Initialize to -1 to indicate not yet set
+		notifySubsystem:   nil, // No notification callback by default
 	}, nil
+}
+
+// SetNotifySubsystem sets the callback for subsystem change notifications
+// The callback will be invoked when player or playlist state changes
+func (p *Player) SetNotifySubsystem(callback func(subsystem string)) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.notifySubsystem = callback
 }
 
 // GetHostInfo returns the discovered host connection information
@@ -279,14 +293,14 @@ func (p *Player) Connect() error {
 	// Lazily create the client on first connect
 	// This ensures upload happens before client connection is established
 	if p.client == nil {
-		log.Printf("Creating MemoryPlay client for target: %s", p.targetName)
+		log.Printf("Creating MemoryPlay client for target: %s (native: %v)", p.targetName, p.useNative)
 		mpTarget := &memoryplay.Target{
 			Name:      p.targetName,
 			IP:        p.targetIP,
 			Port:      p.targetPort,
 			Interface: fmt.Sprintf("%d", p.targetIf),
 		}
-		p.client = memoryplay.NewClient(p.hostIP, mpTarget)
+		p.client = memoryplay.NewClient(p.hostIP, mpTarget, p.useNative)
 	}
 
 	if err := p.client.Connect(); err != nil {
@@ -319,54 +333,194 @@ func (p *Player) AddURLs(urls []string) {
 	}
 }
 
-// Play starts playback from the beginning or resumes from pause
+// AddURLAt adds a URL at a specific position and starts background caching
+// Returns the position where the track was added
+// If adding at or before current position while playing, restarts playback
+func (p *Player) AddURLAt(url string, position int) int {
+	// Add track at position
+	actualPosition := p.pl.AddAt(url, position)
+	log.Printf("Added URL at position %d: %s", actualPosition, url)
+
+	// Start background caching
+	go p.backgroundCache(url)
+
+	return actualPosition
+}
+
+// Play starts playback of a new track
 func (p *Player) Play() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
-	// If paused, resume playback
-	if p.paused {
-		log.Printf("Resuming playback from pause")
-		p.paused = false
-		if p.client != nil {
-			if err := p.client.Play(); err != nil {
-				return fmt.Errorf("failed to resume playback: %w", err)
-			}
-		}
-		return nil
-	}
-
-	// If already playing, nothing to do
-	if p.playing {
-		return nil
-	}
-
-	// Start new playback
+	// Start new playback from current position
 	p.playing = true
 	p.stopped = false
+	p.paused = false
 
-	// Start playback loop in goroutine
-	p.pl.Seek(0)
+	// Start playback loop in goroutine (will play from current position)
+	p.mu.Unlock()
 	go p.playbackLoop()
 
 	return nil
 }
 
-// Pause pauses playback (can be resumed with Play)
+// PlayAt seeks to a specific position and starts playback
+func (p *Player) PlayAt(position int) error {
+	// Seek to the position
+	if _, err := p.pl.Seek(position); err != nil {
+		return fmt.Errorf("failed to seek to position %d: %w", position, err)
+	}
+
+	// If already playing, stop first so Play() will restart
+	p.mu.Lock()
+	wasPlaying := p.playing && !p.paused
+	p.mu.Unlock()
+
+	if wasPlaying {
+		if err := p.client.Quit(); err != nil {
+			return fmt.Errorf("failed to stop: %w", err)
+		}
+	}
+
+	// Now call Play() to start playback
+	return p.Play()
+}
+
+// Pause pauses playback (can be resumed with Resume)
 func (p *Player) Pause() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	if !p.playing || p.paused {
+		p.mu.Unlock()
 		return nil // Already paused or not playing
 	}
 
 	log.Printf("Pausing playback")
 	p.paused = true
 
+	var err error
 	if p.client != nil {
-		return p.client.Pause()
+		err = p.client.Pause()
 	}
+	p.mu.Unlock()
+
+	// Notify subsystem change
+	if p.notifySubsystem != nil {
+		p.notifySubsystem("player")
+	}
+
+	return err
+}
+
+// Resume resumes playback from pause
+func (p *Player) Resume() error {
+	p.mu.Lock()
+
+	if !p.paused {
+		p.mu.Unlock()
+		return nil // Not paused, nothing to resume
+	}
+
+	log.Printf("Resuming playback from pause")
+	if p.client != nil {
+		if err := p.client.Play(); err != nil {
+			p.mu.Unlock()
+			return fmt.Errorf("failed to resume playback: %w", err)
+		}
+
+		// Unlock before waiting
+		p.mu.Unlock()
+
+		// Wait for playback to actually start
+		if !p.waitForPlaybackStart() {
+			p.mu.Lock()
+			p.paused = true // Restore paused state on failure
+			p.mu.Unlock()
+			return fmt.Errorf("timeout waiting for playback to resume")
+		}
+
+		// Only clear paused flag after playback confirmed
+		p.mu.Lock()
+		p.paused = false
+		p.mu.Unlock()
+	} else {
+		p.paused = false
+		p.mu.Unlock()
+	}
+
+	// Notify subsystem change
+	if p.notifySubsystem != nil {
+		p.notifySubsystem("player")
+	}
+
+	return nil
+}
+
+// Next skips to the next track in the playlist
+func (p *Player) Next() error {
+	p.mu.Lock()
+	wasPlaying := p.playing && !p.paused
+	p.mu.Unlock()
+
+	// Move to next track in playlist
+	_, err := p.pl.Next()
+	if err != nil {
+		return err
+	}
+
+	// If we were playing, restart playback at new position
+	if wasPlaying {
+		if err := p.client.Quit(); err != nil {
+			return fmt.Errorf("failed to stop: %w", err)
+		}
+		return p.playFromCurrent()
+	}
+
+	return nil
+}
+
+// Previous skips to the previous track in the playlist
+func (p *Player) Previous() error {
+	p.mu.Lock()
+	wasPlaying := p.playing && !p.paused
+	p.mu.Unlock()
+
+	// Move to previous track in playlist
+	_, err := p.pl.Previous()
+	if err != nil {
+		return err
+	}
+
+	// If we were playing, restart playback at new position
+	if wasPlaying {
+		if err := p.client.Quit(); err != nil {
+			return fmt.Errorf("failed to stop: %w", err)
+		}
+		return p.playFromCurrent()
+	}
+
+	return nil
+}
+
+// playFromCurrent starts playback from the current playlist position
+// Unlike Play(), this does not seek to position 0
+func (p *Player) playFromCurrent() error {
+	p.mu.Lock()
+
+	// If already playing, nothing to do
+	if p.playing {
+		p.mu.Unlock()
+		return nil
+	}
+
+	// Start playback from current position
+	p.playing = true
+	p.stopped = false
+	p.paused = false
+
+	// Start playback loop WITHOUT seeking
+	p.mu.Unlock()
+	go p.playbackLoop()
+
 	return nil
 }
 
@@ -393,7 +547,8 @@ func (p *Player) playbackLoop() {
 		}
 
 		// Play the track
-		log.Printf("Playing track %d: %s", track.Index, track.URL)
+		currentIndex := p.pl.CurrentIndex()
+		log.Printf("Playing track %d: %s", currentIndex, track.URL)
 		err = p.PlayTrack(track)
 		if err != nil {
 			log.Printf("Error playing track %s: %v", track.URL, err)
@@ -401,8 +556,22 @@ func (p *Player) playbackLoop() {
             return
 		}
 
+		// Notify that player state changed (track started)
+		p.mu.Lock()
+		if p.notifySubsystem != nil {
+			p.notifySubsystem("player")
+		}
+		p.mu.Unlock()
+
 		// Wait for track to finish playing by polling session status
 		p.waitForTrackCompletion()
+
+		// Notify that player state changed (track finished)
+		p.mu.Lock()
+		if p.notifySubsystem != nil {
+			p.notifySubsystem("player")
+		}
+		p.mu.Unlock()
 
 		// Track completed successfully, advance to next
 		_, err = p.pl.Next()
@@ -414,9 +583,63 @@ func (p *Player) playbackLoop() {
 	}
 }
 
+// waitForCondition polls GetCurrentTime until checkFn returns true or timeout occurs
+func (p *Player) waitForCondition(checkFn func(int64, error) bool, timeout time.Duration, successMsg, timeoutMsg string) bool {
+	if p.client == nil {
+		return true // No client, nothing to wait for
+	}
+
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-timer.C:
+			log.Printf(timeoutMsg)
+			return false
+		case <-ticker.C:
+			currentTime, err := p.client.GetCurrentTime()
+			if checkFn(currentTime, err) {
+				log.Printf(successMsg)
+				return true
+			}
+		}
+	}
+}
+
+// waitForPlaybackStart waits for playback to actually start
+// Returns true if playback started, false on timeout
+func (p *Player) waitForPlaybackStart() bool {
+	return p.waitForCondition(
+		func(time int64, err error) bool { return err == nil && time >= 0 },
+		5*time.Second,
+		"Playback started",
+		"Timeout waiting for playback to start",
+	)
+}
+
+// waitForPlaybackStop waits for playback to actually stop
+// Returns true if playback stopped, false on timeout
+func (p *Player) waitForPlaybackStop() bool {
+	return p.waitForCondition(
+		func(time int64, err error) bool { return err != nil || time == -1 },
+		2*time.Second,
+		"Playback stopped",
+		"Timeout waiting for playback to stop",
+	)
+}
+
 // waitForTrackCompletion polls until the track finishes (current time returns -1)
 func (p *Player) waitForTrackCompletion() {
 	if p.client == nil {
+		return
+	}
+
+	// Wait for playback to actually start
+	if !p.waitForPlaybackStart() {
 		return
 	}
 
@@ -447,7 +670,6 @@ func (p *Player) waitForTrackCompletion() {
 			// Get current playback time
 			currentTime, err := p.client.GetCurrentTime()
 			if err != nil {
-				log.Printf("Error getting current time: %v", err)
 				return
 			}
 
@@ -468,20 +690,30 @@ func (p *Player) waitForTrackCompletion() {
 // Stop stops playback completely (cannot be resumed, unlike Pause)
 func (p *Player) Stop() error {
 	p.mu.Lock()
-	defer p.mu.Unlock()
 
 	p.stopped = true
 	p.playing = false
 	p.paused = false
 
+	var err error
 	if p.client != nil {
-		return p.client.Quit()
+		err = p.client.Quit()
 	}
-	return nil
+	p.mu.Unlock()
+
+	// Wait for playback to actually stop before notifying
+	p.waitForPlaybackStop()
+
+	// Notify subsystem change
+	if p.notifySubsystem != nil {
+		p.notifySubsystem("player")
+	}
+
+	return err
 }
 
-// PlayTrack plays a single track using the C library
-// The C library expects WAV files, so we decode directly to WAV
+// PlayTrack plays a single track
+// Decodes to WAV format and uploads to MemoryPlay host
 func (p *Player) PlayTrack(track *playlist.Track) error {
 	log.Printf("Playing track: %s", track.URL)
 
@@ -505,6 +737,7 @@ func (p *Player) PlayTrack(track *playlist.Track) error {
 	if err != nil {
 		return fmt.Errorf("failed to get format: %w", err)
 	}
+	defer memoryplay.FreeFormat(formatHandle)
 
 	// Upload audio to MemoryPlay host
 	log.Printf("Uploading audio to MemoryPlay host...")
@@ -529,34 +762,15 @@ func (p *Player) PlayTrack(track *playlist.Track) error {
 	p.lastRemainingTime = 0
 	p.mu.Unlock()
 
-	// Get track duration from tag list
-	// Tag format is "INDEX:TIME:NAME" where TIME is duration in seconds
-	tags, err := p.client.GetTagList()
-	if err == nil && len(tags) > 0 {
-		// Find the tag that matches the current WAV file
-		// Extract just the filename from the full path for matching
-		wavFilename := wavPath
-		if lastSlash := strings.LastIndex(wavPath, "/"); lastSlash != -1 {
-			wavFilename = wavPath[lastSlash+1:]
-		}
-
-		// Search through tags to find the matching one
-		for _, tag := range tags {
-			tagParts := strings.Split(tag.Tag, ":")
-			if len(tagParts) >= 3 {
-				// tagParts[2] contains the NAME portion
-				tagName := tagParts[2]
-				// Check if the tag name partially matches the WAV filename
-				if strings.Contains(wavFilename, tagName) || strings.Contains(tagName, wavFilename) {
-					if duration, err := strconv.ParseInt(tagParts[1], 10, 64); err == nil {
-						p.mu.Lock()
-						p.currentTrackDuration = duration
-						p.mu.Unlock()
-						log.Printf("Track duration: %d seconds (matched tag: %s)", duration, tagName)
-						break
-					}
-				}
-			}
+	// Get track duration from metadata
+	if durationStr, ok := track.Metadata["duration"]; ok && durationStr != "" {
+		// Parse duration as float and convert to integer seconds
+		var durationSec float64
+		if _, err := fmt.Sscanf(durationStr, "%f", &durationSec); err == nil {
+			p.mu.Lock()
+			p.currentTrackDuration = int64(durationSec)
+			p.mu.Unlock()
+			log.Printf("Track duration: %d seconds (from metadata)", int64(durationSec))
 		}
 	}
 
@@ -565,26 +779,13 @@ func (p *Player) PlayTrack(track *playlist.Track) error {
 
 // backgroundCache pre-fetches and decodes a track in the background
 func (p *Player) backgroundCache(url string) {
-	cachePath := p.cache.GetPathForKey(url)
-
-	// Check if already cached
-	if _, err := os.Stat(cachePath); err == nil {
-		log.Printf("Background cache: already cached: %s", url)
-		return
-	}
-
-	log.Printf("Background cache: starting decode for: %s", url)
-
-	// Decode to cache WAV file
-	_, err := decoder.DecodeToWAVFile(url, cachePath)
+	log.Printf("Background cache: starting for: %s", url)
+	_, err := p.cache.EnsureDecoded(url, func(source, dest string) error {
+		_, err := decoder.DecodeToWAVFile(source, dest)
+		return err
+	})
 	if err != nil {
-		log.Printf("Background cache: failed to decode %s: %v", url, err)
-		return
-	}
-
-	// Register the file with cache
-	if err := p.cache.RegisterFile(url); err != nil {
-		log.Printf("Background cache: warning: failed to register cache file for %s: %v", url, err)
+		log.Printf("Background cache: failed for %s: %v", url, err)
 	} else {
 		log.Printf("Background cache: completed for: %s", url)
 	}
@@ -593,31 +794,15 @@ func (p *Player) backgroundCache(url string) {
 // fetchDecodeAndCache fetches and decodes audio directly to a WAV file in the cache
 // Returns the WAV file path
 func (p *Player) fetchDecodeAndCache(track *playlist.Track) (string, error) {
-	// Get cache path for this track
-	cachePath := p.cache.GetPathForKey(track.URL)
-
-	// Check if already cached
-	if _, err := os.Stat(cachePath); err == nil {
-		log.Printf("Using cached WAV file: %s", cachePath)
-		return cachePath, nil
-	}
-
-	// Decode directly to cache WAV file
-	log.Printf("Decoding to cache: %s", track.URL)
-	_, err := decoder.DecodeToWAVFile(track.URL, cachePath)
+	log.Printf("Fetching and decoding track: %s", track.URL)
+	cachePath, err := p.cache.EnsureDecoded(track.URL, func(source, dest string) error {
+		_, err := decoder.DecodeToWAVFile(source, dest)
+		return err
+	})
 	if err != nil {
-		return "", fmt.Errorf("failed to decode to WAV: %w", err)
+		return "", err
 	}
-
-	log.Printf("Decoded successfully to: %s", cachePath)
-
-	// Register the file with cache
-	if err := p.cache.RegisterFile(track.URL); err != nil {
-		log.Printf("Warning: failed to register cache file: %v", err)
-	} else {
-		log.Printf("Registered in cache: %s", track.URL)
-	}
-
+	log.Printf("Using cached WAV file: %s", cachePath)
 	return cachePath, nil
 }
 
@@ -665,7 +850,7 @@ func (p *Player) GetPlaybackTiming() *PlaybackTiming {
 	remaining := p.lastRemainingTime
 	p.mu.Unlock()
 
-	log.Printf("remaining %d duration: %d", remaining, duration)
+// 	log.Printf("remaining: %d duration: %d", remaining, duration)
 
 	// Return nil if we don't have duration info
 	if duration <= 0 {

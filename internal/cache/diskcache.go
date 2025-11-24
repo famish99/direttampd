@@ -6,8 +6,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
+	"log"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 )
 
@@ -29,6 +32,9 @@ type DiskCache struct {
 	// LRU tracking
 	entries map[string]*Entry
 	lru     *list.List
+
+	// Download synchronization - prevents concurrent downloads of same URL
+	downloadLocks sync.Map // map[string]*sync.Mutex
 }
 
 // NewDiskCache creates a new disk-based LRU cache
@@ -282,4 +288,118 @@ func (c *DiskCache) Size() int64 {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.currentSize
+}
+
+// getDownloadLock returns a mutex for the given URL to prevent concurrent downloads
+func (c *DiskCache) getDownloadLock(url string) *sync.Mutex {
+	lock, _ := c.downloadLocks.LoadOrStore(url, &sync.Mutex{})
+	return lock.(*sync.Mutex)
+}
+
+// fetchToTempFile downloads a remote URL to a temporary file
+// Uses URL hash for consistent temp file naming to enable deduplication
+// Returns the temp file path
+// NOTE: Caller must hold the download lock for this URL
+func (c *DiskCache) fetchToTempFile(url string) (string, error) {
+	log.Printf("Starting download for: %s", url)
+	// Create temp file with hash-based name for consistency
+	urlHash := c.hashKey(url)
+	tempPath := filepath.Join(os.TempDir(), fmt.Sprintf("direttampd-fetch-%s.tmp", urlHash))
+
+	// Check if file already exists (from another request or previous download)
+	if _, err := os.Stat(tempPath); err == nil {
+		log.Printf("Reusing existing temp file: %s", tempPath)
+		return tempPath, nil
+	}
+
+	// Create the temp file
+	tempFile, err := os.Create(tempPath)
+	if err != nil {
+		return "", fmt.Errorf("failed to create temp file: %w", err)
+	}
+
+	// Download the URL
+	log.Printf("Downloading URL: %s", url)
+	resp, err := http.Get(url)
+	if err != nil {
+		tempFile.Close()
+		os.Remove(tempPath)
+		return "", fmt.Errorf("failed to fetch URL: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		tempFile.Close()
+		os.Remove(tempPath)
+		return "", fmt.Errorf("failed to fetch URL: HTTP %d", resp.StatusCode)
+	}
+
+	// Copy response to temp file
+	_, err = io.Copy(tempFile, resp.Body)
+	tempFile.Close()
+	if err != nil {
+		os.Remove(tempPath)
+		return "", fmt.Errorf("failed to write temp file: %w", err)
+	}
+
+	log.Printf("Download complete: %s", tempPath)
+	return tempPath, nil
+}
+
+// EnsureDecoded ensures a URL is decoded and cached
+// decodeFn should decode from source path to destination path
+// Returns the cached file path
+func (c *DiskCache) EnsureDecoded(url string, decodeFn func(source, dest string) error) (string, error) {
+	cachePath := c.GetPathForKey(url)
+
+	// Quick check if already cached (without lock)
+	if _, err := os.Stat(cachePath); err == nil {
+		return cachePath, nil
+	}
+
+	// Get lock for this URL to prevent concurrent decode operations
+	lock := c.getDownloadLock(url)
+	lock.Lock()
+	defer lock.Unlock()
+
+	// Check again after acquiring lock (another goroutine may have completed it)
+	if _, err := os.Stat(cachePath); err == nil {
+		log.Printf("Using cached file: %s", cachePath)
+		return cachePath, nil
+	}
+
+	// Determine source path - fetch remote URLs locally first
+	sourcePath := url
+	var tempFile string
+	isRemote := strings.HasPrefix(url, "http://") || strings.HasPrefix(url, "https://")
+
+	if isRemote {
+		// Fetch remote URL to temporary file first
+		log.Printf("Fetching remote URL to local file: %s", url)
+		var err error
+		tempFile, err = c.fetchToTempFile(url)
+		if err != nil {
+			return "", fmt.Errorf("failed to fetch remote URL: %w", err)
+		}
+		defer os.Remove(tempFile) // Clean up temp file when done
+		sourcePath = tempFile
+		log.Printf("Fetched to temporary file: %s", tempFile)
+	}
+
+	// Decode to cache
+	log.Printf("Decoding to cache: %s", sourcePath)
+	if err := decodeFn(sourcePath, cachePath); err != nil {
+		return "", fmt.Errorf("failed to decode: %w", err)
+	}
+
+	log.Printf("Decoded successfully to: %s", cachePath)
+
+	// Register the file with cache
+	if err := c.RegisterFile(url); err != nil {
+		log.Printf("Warning: failed to register cache file: %v", err)
+	} else {
+		log.Printf("Registered in cache: %s", url)
+	}
+
+	return cachePath, nil
 }

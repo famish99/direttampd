@@ -13,27 +13,46 @@ type Target struct {
 	Name      string
 }
 
-// Client manages connection to a MemoryPlayHost using the C library
+// ControlSession defines the interface for MemoryPlay session control
+type ControlSession interface {
+	Close()
+	ConnectTarget(targetAddress string, interfaceNumber uint32) error
+	Play() error
+	Pause() error
+	Seek(offsetSeconds int64) error
+	SeekAbsolute(positionSeconds int64) error
+	Quit() error
+	GetPlayStatus() (PlaybackStatus, error)
+	GetCurrentTime() (int64, error)
+	GetTagList() ([]TagInfo, error)
+}
+
+// Client manages connection to a MemoryPlayHost
 type Client struct {
 	hostIP    string  // MemoryPlay host IP to connect to
 	target    *Target // Target device for audio output
 	mu        sync.Mutex
 	connected bool
 
-	// C library session handle
-	session *Session
+	// Session handle (either CGo or native implementation)
+	session   ControlSession
+	useNative bool
 
 	// Callbacks
 	onStatus func(status string)
 }
 
 // NewClient creates a new MemoryPlay client
-// hostIP specifies the MemoryPlay host to connect to (port is auto-discovered by the C library)
+// hostIP specifies the MemoryPlay host to connect to
+//   - For CGo implementation: IP address (port auto-discovered by C library)
+//   - For native implementation: "IP,PORT%INTERFACE_NUM" format (e.g., "::1,34133%0")
 // target specifies the audio output device the host should use
-func NewClient(hostIP string, target *Target) *Client {
+// useNative specifies whether to use native Go implementation (true) or CGo (false)
+func NewClient(hostIP string, target *Target, useNative bool) *Client {
 	return &Client{
-		hostIP: hostIP,
-		target: target,
+		hostIP:    hostIP,
+		target:    target,
+		useNative: useNative,
 	}
 }
 
@@ -51,8 +70,16 @@ func (c *Client) Connect() error {
 	var interfaceNum uint32
 	fmt.Sscanf(c.target.Interface, "%d", &interfaceNum)
 
-	// Create session to the host
-	session, err := CreateSession(c.hostIP, interfaceNum)
+	// Create session to the host (either CGo or native)
+	var session ControlSession
+	var err error
+
+	if c.useNative {
+		session, err = CreateNativeSession(c.hostIP, interfaceNum)
+	} else {
+		session, err = CreateSession(c.hostIP, interfaceNum)
+	}
+
 	if err != nil {
 		return fmt.Errorf("failed to create session to MemoryPlay host: %w", err)
 	}
