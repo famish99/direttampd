@@ -271,6 +271,33 @@ func (c *DiskCache) evictOldest() {
 	os.Remove(entry.Path)
 }
 
+// Invalidate removes a cache entry both from memory and disk
+// Use this when a cached file is discovered to be corrupt or invalid
+func (c *DiskCache) Invalidate(key string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	hash := c.hashKey(key)
+	entry, exists := c.entries[hash]
+	if !exists {
+		// Entry not in cache, nothing to do
+		return nil
+	}
+
+	// Remove from cache tracking
+	delete(c.entries, hash)
+	c.lru.Remove(entry.element)
+	c.currentSize -= entry.Size
+
+	// Remove file from disk
+	if err := os.Remove(entry.Path); err != nil && !os.IsNotExist(err) {
+		return fmt.Errorf("failed to remove cache file: %w", err)
+	}
+
+	log.Printf("Invalidated cache entry: %s (hash: %s)", key, hash)
+	return nil
+}
+
 // Clear removes all cache entries
 func (c *DiskCache) Clear() error {
 	c.mu.Lock()

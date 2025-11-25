@@ -24,20 +24,48 @@ type PlaylistEvent struct {
 	Position  int    // Position where track was added
 }
 
+// InterruptEvent signals a playback interruption with notification info
+type InterruptEvent struct {
+	ShouldNotify   bool // Whether to notify subsystem of this event
+	ShouldExitLoop bool // Whether to exit the playback loop
+}
+
 // Playlist manages a list of tracks to play
 type Playlist struct {
-	mu      sync.RWMutex
-	tracks  []Track
-	current int
-	version uint32          // Increments on each playlist modification
-	history []PlaylistEvent // Event log of all modifications
+	mu           sync.RWMutex
+	tracks       []Track
+	current      int
+	stagedNext   int             // Staged next track index (-1 means no staging)
+	version      uint32          // Increments on each playlist modification
+	history      []PlaylistEvent // Event log of all modifications
+	interruptCh  chan InterruptEvent // Channel to signal playback interruptions
 }
 
 // NewPlaylist creates a new empty playlist
 func NewPlaylist() *Playlist {
 	return &Playlist{
-		tracks:  make([]Track, 0),
-		current: -1,
+		tracks:      make([]Track, 0),
+		current:     -1,
+		stagedNext:  -1, // -1 means no staging
+		interruptCh: make(chan InterruptEvent, 1), // Buffered to avoid blocking
+	}
+}
+
+// GetInterruptChannel returns the interrupt channel for this playlist
+func (p *Playlist) GetInterruptChannel() <-chan InterruptEvent {
+	return p.interruptCh
+}
+
+// SignalInterrupt sends an interrupt event on the channel
+// Returns false if channel is full (interrupt already pending)
+func (p *Playlist) SignalInterrupt(shouldNotify, shouldExitLoop bool) bool {
+	select {
+	case p.interruptCh <- InterruptEvent{ShouldNotify: shouldNotify, ShouldExitLoop: shouldExitLoop}:
+        log.Printf("InterruptEvent: %s, %s", shouldNotify, shouldExitLoop)
+		return true
+	default:
+		// Channel full, interrupt already pending
+		return false
 	}
 }
 
@@ -69,6 +97,12 @@ func (p *Playlist) Add(url string) {
 		Metadata: metadata,
 	}
 	p.tracks = append(p.tracks, track)
+
+	// If this is the first track, set current to 0
+	if p.current == -1 && len(p.tracks) == 1 {
+		p.current = 0
+	}
+
 	p.version++ // Increment version on playlist modification
 
 	// Record the event
@@ -128,8 +162,11 @@ func (p *Playlist) AddAt(url string, position int) int {
 	// Insert at position
 	p.tracks = append(p.tracks[:position], append([]Track{track}, p.tracks[position:]...)...)
 
-	// Adjust current index if we inserted before or at current position
-	if position <= p.current {
+	// If this is the first track, set current to the inserted position
+	if p.current == -1 && len(p.tracks) == 1 {
+		p.current = position
+	} else if position <= p.current {
+		// Adjust current index if we inserted before or at current position
 		p.current++
 	}
 
@@ -170,52 +207,74 @@ func (p *Playlist) Current() (*Track, error) {
 	return &p.tracks[p.current], nil
 }
 
-// Next moves to the next track and returns it
-func (p *Playlist) Next() (*Track, error) {
+// Next stages the next track (doesn't modify current until CommitStaged is called)
+func (p *Playlist) Next() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if len(p.tracks) == 0 {
-		return nil, fmt.Errorf("playlist is empty")
+		return fmt.Errorf("playlist is empty")
 	}
 
-	p.current++
-	if p.current >= len(p.tracks) {
-		return nil, fmt.Errorf("end of playlist")
+	p.stagedNext = p.current + 1
+	if p.stagedNext >= len(p.tracks) {
+		return fmt.Errorf("end of playlist")
 	}
 
-	return &p.tracks[p.current], nil
+	return nil
 }
 
-// Previous moves to the previous track and returns it
-func (p *Playlist) Previous() (*Track, error) {
+// Previous stages the previous track (doesn't modify current until CommitStaged is called)
+func (p *Playlist) Previous() error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if len(p.tracks) == 0 {
-		return nil, fmt.Errorf("playlist is empty")
+		return fmt.Errorf("playlist is empty")
 	}
 
-	p.current--
-	if p.current < 0 {
-		p.current = 0
-		return nil, fmt.Errorf("beginning of playlist")
+	p.stagedNext = p.current - 1
+	if p.stagedNext < 0 {
+		return fmt.Errorf("beginning of playlist")
 	}
 
-	return &p.tracks[p.current], nil
+	return nil
 }
 
-// Seek moves to a specific track index
-func (p *Playlist) Seek(index int) (*Track, error) {
+// Seek stages a specific track index (doesn't modify current until CommitStaged is called)
+func (p *Playlist) Seek(index int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
 	if index < 0 || index >= len(p.tracks) {
-		return nil, fmt.Errorf("invalid track index: %d", index)
+		return fmt.Errorf("invalid track index: %d", index)
 	}
 
-	p.current = index
-	return &p.tracks[p.current], nil
+	p.stagedNext = index
+	return nil
+}
+
+// CommitStaged commits the staged track to current
+// If no track is staged, automatically stages the next track first
+func (p *Playlist) CommitStaged() error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	// If nothing staged, attempt to stage next track
+	if p.stagedNext < 0 {
+		if len(p.tracks) == 0 {
+			return fmt.Errorf("playlist is empty")
+		}
+
+		p.stagedNext = p.current + 1
+		if p.stagedNext >= len(p.tracks) {
+			return fmt.Errorf("end of playlist")
+		}
+	}
+
+	p.current = p.stagedNext
+	p.stagedNext = -1 // Reset staging
+	return nil
 }
 
 // Length returns the number of tracks

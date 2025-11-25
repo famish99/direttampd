@@ -1,6 +1,7 @@
 package player
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"strings"
@@ -22,6 +23,11 @@ type Player struct {
 	cache  *cache.DiskCache
 	pl     *playlist.Playlist
 
+	// Playlist transition support
+	pendingPlaylist *playlist.Playlist // New playlist being built during transition (nil if not transitioning)
+	playbackCtx     context.Context    // Controls current playback loop
+	playbackCancel  context.CancelFunc // Cancels current playback loop
+
 	// Discovered connection info
 	hostIP     string
 	hostIfNum  uint32
@@ -34,9 +40,7 @@ type Player struct {
 	useNative bool // Use native Go implementation instead of CGo
 
 	// Playback state
-	playing bool
-	paused  bool
-	stopped bool
+	state PlaybackState
 
 	// Current track timing info
 	currentTrackDuration   int64 // Duration in seconds
@@ -251,8 +255,7 @@ func NewPlayer(cfg *config.Config, useNative bool) (*Player, error) {
 		targetIf:          targetIf,
 		targetName:        targetName,
 		useNative:         useNative,
-		playing:           false,
-		stopped:           false,
+		state:             StateStopped,
 		lastRemainingTime: -1, // Initialize to -1 to indicate not yet set
 		notifySubsystem:   nil, // No notification callback by default
 	}, nil
@@ -352,33 +355,47 @@ func (p *Player) Play() error {
 	p.mu.Lock()
 
 	// Start new playback from current position
-	p.playing = true
-	p.stopped = false
-	p.paused = false
+	p.state = StatePlaying
+
+	// Create cancellable context for playback loop
+	ctx, cancel := context.WithCancel(context.Background())
+	p.playbackCtx = ctx
+	p.playbackCancel = cancel
+
+	// Capture playlist for playback loop to close over
+	pl := p.pl
+	p.mu.Unlock()
 
 	// Start playback loop in goroutine (will play from current position)
-	p.mu.Unlock()
-	go p.playbackLoop()
+	go p.playbackLoop(ctx, pl)
 
 	return nil
 }
 
 // PlayAt seeks to a specific position and starts playback
 func (p *Player) PlayAt(position int) error {
-	// Seek to the position
-	if _, err := p.pl.Seek(position); err != nil {
+	// If already playing, cancel the playback loop
+	p.mu.Lock()
+	wasPlaying := p.state == StatePlaying
+	if wasPlaying {
+		// Cancel playback loop via context
+		if p.playbackCancel != nil {
+			log.Printf("Cancelling playback loop for PlayAt")
+			p.playbackCancel()
+			p.playbackCancel = nil
+			p.playbackCtx = nil
+		}
+	}
+	p.mu.Unlock()
+
+	// Seek to the position (stages the track)
+	if err := p.pl.Seek(position); err != nil {
 		return fmt.Errorf("failed to seek to position %d: %w", position, err)
 	}
 
-	// If already playing, stop first so Play() will restart
-	p.mu.Lock()
-	wasPlaying := p.playing && !p.paused
-	p.mu.Unlock()
-
-	if wasPlaying {
-		if err := p.client.Quit(); err != nil {
-			return fmt.Errorf("failed to stop: %w", err)
-		}
+	// Commit the staged position
+	if err := p.pl.CommitStaged(); err != nil {
+		return fmt.Errorf("failed to commit seek: %w", err)
 	}
 
 	// Now call Play() to start playback
@@ -389,13 +406,13 @@ func (p *Player) PlayAt(position int) error {
 func (p *Player) Pause() error {
 	p.mu.Lock()
 
-	if !p.playing || p.paused {
+	if p.state != StatePlaying {
 		p.mu.Unlock()
 		return nil // Already paused or not playing
 	}
 
 	log.Printf("Pausing playback")
-	p.paused = true
+	p.state = StatePaused
 
 	var err error
 	if p.client != nil {
@@ -415,7 +432,7 @@ func (p *Player) Pause() error {
 func (p *Player) Resume() error {
 	p.mu.Lock()
 
-	if !p.paused {
+	if p.state != StatePaused {
 		p.mu.Unlock()
 		return nil // Not paused, nothing to resume
 	}
@@ -433,17 +450,17 @@ func (p *Player) Resume() error {
 		// Wait for playback to actually start
 		if !p.waitForPlaybackStart() {
 			p.mu.Lock()
-			p.paused = true // Restore paused state on failure
+			p.state = StatePaused // Restore paused state on failure
 			p.mu.Unlock()
 			return fmt.Errorf("timeout waiting for playback to resume")
 		}
 
-		// Only clear paused flag after playback confirmed
+		// Only change to playing state after playback confirmed
 		p.mu.Lock()
-		p.paused = false
+		p.state = StatePlaying
 		p.mu.Unlock()
 	} else {
-		p.paused = false
+		p.state = StatePlaying
 		p.mu.Unlock()
 	}
 
@@ -457,89 +474,61 @@ func (p *Player) Resume() error {
 
 // Next skips to the next track in the playlist
 func (p *Player) Next() error {
-	p.mu.Lock()
-	wasPlaying := p.playing && !p.paused
-	p.mu.Unlock()
-
-	// Move to next track in playlist
-	_, err := p.pl.Next()
+	// Stage next track in playlist
+	err := p.pl.Next()
 	if err != nil {
 		return err
 	}
 
-	// If we were playing, restart playback at new position
-	if wasPlaying {
-		if err := p.client.Quit(); err != nil {
-			return fmt.Errorf("failed to stop: %w", err)
-		}
-		return p.playFromCurrent()
-	}
+	// Signal interrupt to playback loop (notify, don't exit)
+	p.pl.SignalInterrupt(true, false)
 
 	return nil
 }
 
 // Previous skips to the previous track in the playlist
 func (p *Player) Previous() error {
-	p.mu.Lock()
-	wasPlaying := p.playing && !p.paused
-	p.mu.Unlock()
-
-	// Move to previous track in playlist
-	_, err := p.pl.Previous()
+	// Stage previous track in playlist
+	err := p.pl.Previous()
 	if err != nil {
 		return err
 	}
 
-	// If we were playing, restart playback at new position
-	if wasPlaying {
-		if err := p.client.Quit(); err != nil {
-			return fmt.Errorf("failed to stop: %w", err)
-		}
-		return p.playFromCurrent()
-	}
-
-	return nil
-}
-
-// playFromCurrent starts playback from the current playlist position
-// Unlike Play(), this does not seek to position 0
-func (p *Player) playFromCurrent() error {
-	p.mu.Lock()
-
-	// If already playing, nothing to do
-	if p.playing {
-		p.mu.Unlock()
-		return nil
-	}
-
-	// Start playback from current position
-	p.playing = true
-	p.stopped = false
-	p.paused = false
-
-	// Start playback loop WITHOUT seeking
-	p.mu.Unlock()
-	go p.playbackLoop()
+	// Signal interrupt to playback loop (notify, don't exit)
+	p.pl.SignalInterrupt(true, false)
 
 	return nil
 }
 
 // playbackLoop is the main playback loop that processes the playlist
-func (p *Player) playbackLoop() {
-	log.Printf("Starting playback loop")
+// Closes over the playlist to work independently of player state changes
+func (p *Player) playbackLoop(ctx context.Context, pl *playlist.Playlist) {
+	defer log.Printf("Playback loop exiting")
+
+	// Get interrupt channel from the closed-over playlist
+	interruptCh := pl.GetInterruptChannel()
 
 	for {
+		// Check if context cancelled (transition to new playlist)
+		select {
+		case <-ctx.Done():
+			log.Printf("Playback loop cancelled via context")
+            p.client.Quit()
+			return
+		default:
+		}
+
 		// Check if we should stop
 		p.mu.Lock()
-		if p.stopped || !p.playing {
+		if p.state != StatePlaying {
 			p.mu.Unlock()
 			log.Printf("Playback loop stopped")
 			return
 		}
 		p.mu.Unlock()
 
-		// Get current track, or start from beginning if no current track
-		track, err := p.pl.Current()
+		// Get current track from closed-over playlist
+		track, err := pl.Current()
 		if err != nil {
 			log.Printf("Invalid current track")
 			p.Stop()
@@ -547,12 +536,11 @@ func (p *Player) playbackLoop() {
 		}
 
 		// Play the track
-		currentIndex := p.pl.CurrentIndex()
+		currentIndex := pl.CurrentIndex()
 		log.Printf("Playing track %d: %s", currentIndex, track.URL)
 		err = p.PlayTrack(track)
 		if err != nil {
 			log.Printf("Error playing track %s: %v", track.URL, err)
-			p.Stop()
             return
 		}
 
@@ -563,20 +551,29 @@ func (p *Player) playbackLoop() {
 		}
 		p.mu.Unlock()
 
-		// Wait for track to finish playing by polling session status
-		p.waitForTrackCompletion()
+		// Wait for track to finish playing or be interrupted
+		shouldNotify, shouldExit := p.waitForTrackCompletion(ctx, interruptCh)
 
-		// Notify that player state changed (track finished)
-		p.mu.Lock()
-		if p.notifySubsystem != nil {
-			p.notifySubsystem("player")
+		// Notify that player state changed (track finished) if requested
+		if shouldNotify {
+			p.mu.Lock()
+			if p.notifySubsystem != nil {
+				p.notifySubsystem("player")
+			}
+			p.mu.Unlock()
 		}
-		p.mu.Unlock()
 
-		// Track completed successfully, advance to next
-		_, err = p.pl.Next()
+		// Exit loop if interrupt requested it (e.g., Stop or PlayAt)
+		if shouldExit {
+			log.Printf("Playback loop exiting due to interrupt")
+			p.client.Quit()
+			return
+		}
+
+		// Commit staged track (from interrupt) or auto-advance to next
+		err = pl.CommitStaged()
 		if err != nil {
-			// Reached end of playlist, wait for more tracks to be added
+			// Reached end of playlist or error
 			p.Stop()
             return
 		}
@@ -632,56 +629,69 @@ func (p *Player) waitForPlaybackStop() bool {
 	)
 }
 
-// waitForTrackCompletion polls until the track finishes (current time returns -1)
-func (p *Player) waitForTrackCompletion() {
+// waitForTrackCompletion polls until the track finishes or is interrupted
+// Returns (shouldNotify, shouldExitLoop) - whether to notify subsystem and whether to exit playback loop
+func (p *Player) waitForTrackCompletion(ctx context.Context, interruptCh <-chan playlist.InterruptEvent) (bool, bool) {
 	if p.client == nil {
-		return
+		return true, true // Default to notify, don't exit
 	}
 
 	// Wait for playback to actually start
+	log.Printf("waitForTrackCompletion: waiting for playback to start")
 	if !p.waitForPlaybackStart() {
-		return
+		log.Printf("waitForTrackCompletion: playback failed to start (timeout)")
+		return true, true // Default to notify, don't exit
 	}
+	log.Printf("waitForTrackCompletion: playback started successfully")
 
-	// Poll current time until it returns -1 (track finished)
+	// Poll current time until it returns -1 (track finished) or interrupt received
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
 	for {
 		select {
+		case <-ctx.Done():
+			// Playback loop cancelled (transition)
+			log.Printf("Track completion polling cancelled via context")
+			return false, true  // Exit loop
+
+		case event := <-interruptCh:
+			// Interrupted by playlist event (Next/Previous/Stop)
+			log.Printf("Track interrupted (shouldNotify: %v, shouldExitLoop: %v)", event.ShouldNotify, event.ShouldExitLoop)
+			return event.ShouldNotify, event.ShouldExitLoop
+
 		case <-ticker.C:
 			// Check if we should stop polling
 			p.mu.Lock()
-			stopped := p.stopped
-			playing := p.playing
-			paused := p.paused
+			state := p.state
 			p.mu.Unlock()
 
 			// Stop polling if explicitly stopped or playback ended
-			if stopped || !playing {
-				return
+			if state == StateStopped {
+				return false, true
 			}
 
 			// If paused, just continue waiting (don't check time)
-			if paused {
+			if state == StatePaused {
 				continue
 			}
 
 			// Get current playback time
 			currentTime, err := p.client.GetCurrentTime()
+			log.Printf("waitForTrackCompletion: GetCurrentTime() returned: %d", currentTime)
 			if err != nil {
-				return
+				return false, true
 			}
 
-		// Cache the elapsed time for GetPlaybackTiming to use
+			// Cache the elapsed time for GetPlaybackTiming to use
 			p.mu.Lock()
 			p.lastRemainingTime = currentTime
 			p.mu.Unlock()
 
 			// Track is finished when GetCurrentTime returns -1
 			if currentTime == -1 {
-				log.Printf("Track finished")
-				return
+				log.Printf("Track finished naturally")
+				return true, false // Natural completion - notify, don't exit
 			}
 		}
 	}
@@ -691,14 +701,16 @@ func (p *Player) waitForTrackCompletion() {
 func (p *Player) Stop() error {
 	p.mu.Lock()
 
-	p.stopped = true
-	p.playing = false
-	p.paused = false
+	p.state = StateStopped
 
-	var err error
-	if p.client != nil {
-		err = p.client.Quit()
+	// Cancel playback loop via context (cleaner than interrupt)
+	if p.playbackCancel != nil {
+		log.Printf("Stopping playback by cancelling context")
+		p.playbackCancel()
+		p.playbackCancel = nil
+		p.playbackCtx = nil
 	}
+
 	p.mu.Unlock()
 
 	// Wait for playback to actually stop before notifying
@@ -709,7 +721,14 @@ func (p *Player) Stop() error {
 		p.notifySubsystem("player")
 	}
 
-	return err
+	return nil
+}
+
+func (p *Player) Quit() error {
+	if p.client != nil {
+		return p.client.Quit()
+	}
+    return nil
 }
 
 // PlayTrack plays a single track
@@ -728,6 +747,10 @@ func (p *Player) PlayTrack(track *playlist.Track) error {
 	// Open WAV file with C library
 	wavFile, err := memoryplay.OpenWavFile(wavPath)
 	if err != nil {
+		// Invalidate cache - file may be corrupt
+		if invalidateErr := p.cache.Invalidate(track.URL); invalidateErr != nil {
+			log.Printf("Warning: failed to invalidate cache: %v", invalidateErr)
+		}
 		return fmt.Errorf("failed to open WAV file: %w", err)
 	}
 	defer wavFile.Close()
@@ -735,6 +758,10 @@ func (p *Player) PlayTrack(track *playlist.Track) error {
 	// Get format handle from WAV file
 	formatHandle, err := wavFile.GetFormat()
 	if err != nil {
+		// Invalidate cache - file may be corrupt
+		if invalidateErr := p.cache.Invalidate(track.URL); invalidateErr != nil {
+			log.Printf("Warning: failed to invalidate cache: %v", invalidateErr)
+		}
 		return fmt.Errorf("failed to get format: %w", err)
 	}
 	defer memoryplay.FreeFormat(formatHandle)
@@ -743,6 +770,10 @@ func (p *Player) PlayTrack(track *playlist.Track) error {
 	log.Printf("Uploading audio to MemoryPlay host...")
 
 	if err := memoryplay.UploadAudio(p.hostIP, p.hostIfNum, []*memoryplay.WavFile{wavFile}, formatHandle, false); err != nil {
+		// Invalidate cache - file may be corrupt or incompatible
+		if invalidateErr := p.cache.Invalidate(track.URL); invalidateErr != nil {
+			log.Printf("Warning: failed to invalidate cache: %v", invalidateErr)
+		}
 		return fmt.Errorf("failed to upload audio: %w", err)
 	}
 
@@ -757,11 +788,6 @@ func (p *Player) PlayTrack(track *playlist.Track) error {
 	}
 	log.Printf("Target connected, playback started")
 
-	// Reset elapsed time for new track
-	p.mu.Lock()
-	p.lastRemainingTime = 0
-	p.mu.Unlock()
-
 	// Get track duration from metadata
 	if durationStr, ok := track.Metadata["duration"]; ok && durationStr != "" {
 		// Parse duration as float and convert to integer seconds
@@ -769,6 +795,7 @@ func (p *Player) PlayTrack(track *playlist.Track) error {
 		if _, err := fmt.Sscanf(durationStr, "%f", &durationSec); err == nil {
 			p.mu.Lock()
 			p.currentTrackDuration = int64(durationSec)
+			p.lastRemainingTime = int64(durationSec)
 			p.mu.Unlock()
 			log.Printf("Track duration: %d seconds (from metadata)", int64(durationSec))
 		}
@@ -824,14 +851,7 @@ const (
 func (p *Player) GetState() PlaybackState {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	if p.paused {
-		return StatePaused
-	}
-	if p.playing {
-		return StatePlaying
-	}
-	return StateStopped
+	return p.state
 }
 
 // PlaybackTiming contains current playback timing information
@@ -872,4 +892,119 @@ func (p *Player) GetPlaybackTiming() *PlaybackTiming {
 		Duration:  duration,
 		Remaining: remaining,
 	}
+}
+
+// GetPendingPlaylist returns the pending playlist (nil if not transitioning)
+func (p *Player) GetPendingPlaylist() *playlist.Playlist {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.pendingPlaylist
+}
+
+// BeginTransition creates a new playlist instance for transition
+func (p *Player) BeginTransition() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pendingPlaylist = playlist.NewPlaylist()
+	log.Printf("Created new pending playlist for transition")
+}
+
+// CancelTransition discards the pending playlist
+func (p *Player) CancelTransition() {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.pendingPlaylist != nil {
+		p.pendingPlaylist = nil
+		log.Printf("Cancelled transition")
+	}
+}
+
+// BackgroundCacheTrack is a public wrapper for background caching
+// Exposes backgroundCache for MPD commands to use
+func (p *Player) BackgroundCacheTrack(url string) {
+	p.backgroundCache(url)
+}
+
+// ReplacePlaylist atomically replaces the current playlist with a new one
+// This should only be used when playback is stopped (no active playback loop)
+func (p *Player) ReplacePlaylist(newPl *playlist.Playlist) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.pl = newPl
+	log.Printf("Replaced playlist with new instance")
+}
+
+// CompleteTransition waits for cache, cancels old loop, starts new loop
+func (p *Player) CompleteTransition() error {
+	p.mu.Lock()
+	pending := p.pendingPlaylist
+	if pending == nil {
+		p.mu.Unlock()
+		return fmt.Errorf("no pending playlist")
+	}
+	p.mu.Unlock()
+
+	// Get first track from pending playlist
+	firstTrack, err := pending.Current()
+	if err != nil {
+		return fmt.Errorf("no tracks in pending playlist: %w", err)
+	}
+
+	log.Printf("Completing transition - waiting for cache: %s", firstTrack.URL)
+
+	// Wait for cache with timeout
+	done := make(chan error, 1)
+	go func() {
+		_, err := p.cache.EnsureDecoded(firstTrack.URL, func(source, dest string) error {
+			_, err := decoder.DecodeToWAVFile(source, dest)
+			return err
+		})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		if err != nil {
+			return fmt.Errorf("cache failed: %w", err)
+		}
+	case <-time.After(30 * time.Second):
+		return fmt.Errorf("cache timeout")
+	}
+
+	log.Printf("Cache ready, swapping playlists")
+
+	// Cancel old playback loop if running
+	p.mu.Lock()
+	if p.playbackCancel != nil {
+		log.Printf("Cancelling old playback loop")
+		p.playbackCancel()
+		p.playbackCancel = nil
+		p.playbackCtx = nil
+	}
+
+	// Atomic reference swap
+	p.pl = pending
+	p.pendingPlaylist = nil
+
+	// Create new context for new playback loop
+	ctx, cancel := context.WithCancel(context.Background())
+	p.playbackCtx = ctx
+	p.playbackCancel = cancel
+	p.state = StatePlaying
+
+	// Capture playlist for closure
+	pl := p.pl
+	p.mu.Unlock()
+
+	// Start new playback loop
+	log.Printf("Starting new playback loop with transitioned playlist")
+	go p.playbackLoop(ctx, pl)
+
+	// Notify subsystem change
+	if p.notifySubsystem != nil {
+		p.notifySubsystem("player")
+	}
+
+	log.Printf("Transition complete")
+	return nil
 }

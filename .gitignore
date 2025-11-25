@@ -48,3 +48,13 @@ go.work.sum
 /MemoryPlayController/test_list_targets
 /MemoryPlayController/test_session_control
 /MemoryPlayController/test_upload_audio
+/direttampd.yaml
+/MemoryPlayController/FlacDecode.cpp
+/MemoryPlayController/FlacDecode.hpp
+/MemoryPlayController/main.cpp
+/MemoryPlayController/Makefile
+/MemoryPlayController/memo.txt
+/MemoryPlayController/MemoryPlayControll.hpp
+/MemoryPlayController/MemoryPlayController.cpp
+/MemoryPlayController/WAV.cpp
+/MemoryPlayController/WAV.hpp

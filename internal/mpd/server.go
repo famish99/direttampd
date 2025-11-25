@@ -135,7 +135,7 @@ func NewServer(addr string, p *player.Player) *Server {
 
 	// Set up player notification callback for idle connections
 	p.SetNotifySubsystem(s.NotifySubsystemChange)
-	p.Stop()
+	p.Quit()
 
 	return s
 }
@@ -184,6 +184,7 @@ func (s *Server) Stop() error {
 	if s.listener != nil {
 		return s.listener.Close()
 	}
+    s.player.Quit()
 	return nil
 }
 
@@ -441,6 +442,28 @@ func (s *Server) handleCommand(line string) string {
 	}
 }
 
+// addTrackToPlaylist adds a track to either the pending or current playlist
+// Returns the song ID
+func (s *Server) addTrackToPlaylist(uri string, position *int) int {
+	// Check if we're in transition
+	pending := s.player.GetPendingPlaylist()
+	if pending != nil {
+		// Add to pending playlist
+		pending.AddMultiple([]string{uri})
+		s.player.BackgroundCacheTrack(uri)
+		log.Printf("Added track to pending playlist: %s", uri)
+		return pending.Length() - 1
+	}
+
+	// Add to current playlist
+	if position != nil {
+		return s.player.AddURLAt(uri, *position)
+	}
+
+	s.player.AddURLs([]string{uri})
+	return s.player.GetPlaylist().Length() - 1
+}
+
 // cmdAdd handles the 'add' command
 func (s *Server) cmdAdd(args []string) string {
 	if len(args) == 0 {
@@ -454,7 +477,7 @@ func (s *Server) cmdAdd(args []string) string {
 		uri = unquoted
 	}
 
-	s.player.AddURLs([]string{uri})
+	s.addTrackToPlaylist(uri, nil)
 
 	// Notify idle connections of playlist change
 	s.NotifySubsystemChange("playlist")
@@ -466,6 +489,17 @@ func (s *Server) cmdAdd(args []string) string {
 // play [POS] - start playback at optional position
 func (s *Server) cmdPlay(args []string) string {
 	var err error
+
+	// Check if we have a pending playlist to transition to
+	if s.player.GetPendingPlaylist() != nil {
+		// Complete the transition (cache, swap, start playback)
+		log.Printf("Completing playlist transition")
+		err = s.player.CompleteTransition()
+		if err != nil {
+			return fmt.Sprintf("ACK [50@0] {play} transition failed: %s\n", err.Error())
+		}
+		return "OK\n"
+	}
 
 	if len(args) > 0 {
 		// Parse position argument
@@ -482,8 +516,18 @@ func (s *Server) cmdPlay(args []string) string {
 		// Play at specific position
 		err = s.player.PlayAt(int(pos64))
 	} else {
-		// Play from current position
-		err = s.player.PlayAt(0)
+		// Play without arguments - resume if paused, otherwise start from current position
+		state := s.player.GetState()
+		if state == player.StatePlaying {
+			// Already playing, nothing to do
+			return "OK\n"
+		} else if state == player.StatePaused {
+			// Resume from pause
+			err = s.player.Resume()
+		} else {
+			// Stopped, start playback
+			err = s.player.Play()
+		}
 	}
 
 	if err != nil {
@@ -545,6 +589,12 @@ func (s *Server) cmdStop(args []string) string {
 
 // cmdNext handles the 'next' command
 func (s *Server) cmdNext(args []string) string {
+	// Cancel any pending transition (user wants to navigate current playlist)
+	if s.player.GetPendingPlaylist() != nil {
+		s.player.CancelTransition()
+		log.Printf("Cancelled transition due to next command")
+	}
+
 	if err := s.player.Next(); err != nil {
 		return fmt.Sprintf("ACK [50@0] {next} %s\n", err.Error())
 	}
@@ -555,6 +605,12 @@ func (s *Server) cmdNext(args []string) string {
 
 // cmdPrevious handles the 'previous' command
 func (s *Server) cmdPrevious(args []string) string {
+	// Cancel any pending transition (user wants to navigate current playlist)
+	if s.player.GetPendingPlaylist() != nil {
+		s.player.CancelTransition()
+		log.Printf("Cancelled transition due to previous command")
+	}
+
 	if err := s.player.Previous(); err != nil {
 		return fmt.Sprintf("ACK [50@0] {previous} %s\n", err.Error())
 	}
@@ -667,7 +723,16 @@ func (s *Server) cmdPlaylistInfo(args []string) string {
 
 // cmdClear handles the 'clear' command
 func (s *Server) cmdClear(args []string) string {
-	s.player.GetPlaylist().Clear()
+	state := s.player.GetState()
+
+	// If playing, create a pending playlist for transition
+	if state == player.StatePlaying {
+		s.player.BeginTransition()
+		log.Printf("Created pending playlist due to clear during playback")
+	} else {
+		// Not playing, replace with new empty playlist
+		s.player.ReplacePlaylist(playlist.NewPlaylist())
+	}
 
 	// Notify idle connections of playlist change
 	s.NotifySubsystemChange("playlist")
@@ -889,8 +954,7 @@ func (s *Server) cmdAddId(args []string) string {
 		uri = unquoted
 	}
 
-	var songId int
-
+	var position *int
 	// Check for optional position argument
 	if len(args) > 1 {
 		// Parse position argument
@@ -903,14 +967,11 @@ func (s *Server) cmdAddId(args []string) string {
 		if err != nil {
 			return "ACK [2@0] {addid} invalid position\n"
 		}
-
-		// Add at specific position (player handles caching and playback restart)
-		songId = s.player.AddURLAt(uri, int(pos64))
-	} else {
-		// Add at end of playlist
-		s.player.AddURLs([]string{uri})
-		songId = s.player.GetPlaylist().Length() - 1
+		pos := int(pos64)
+		position = &pos
 	}
+
+	songId := s.addTrackToPlaylist(uri, position)
 
 	// Notify idle connections of playlist change
 	s.NotifySubsystemChange("playlist")
