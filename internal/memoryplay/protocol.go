@@ -9,43 +9,27 @@ import (
 	"strings"
 )
 
-// FormatID represents audio format information sent to MemoryPlayHost
-// This is sent in Diretta format (16 bytes, little-endian)
-type FormatID struct {
-	SampleRate    uint32 // Sample rate in Hz (e.g., 44100, 48000, 96000)
-	BitsPerSample uint32 // Bit depth (e.g., 16, 24, 32)
-	Channels      uint32 // Number of channels (1=mono, 2=stereo)
-	Format        uint32 // Audio format identifier
-}
-
-// Common audio format constants
-const (
-	FormatPCM   = 1 // Raw PCM
-	FormatFloat = 3 // Floating point PCM
-)
-
-// Message types
+// Message types (SendMessageType in C++)
 const (
 	MessageTypeData    = 0 // Audio data
-	MessageTypeCommand = 1 // Control commands
+	MessageTypeCommand = 1 // Control commands (Headers in C++)
 	MessageTypeTag     = 2 // Tag/metadata
 )
 
 // Header sizes
 const (
-	PayloadHeaderSize  = 9 // 3-byte length + 1-byte type + 1-byte flags + 4-byte identifier
-	DataHeaderSize     = 1 // 1-byte pad
-	CommandHeaderSize  = 6 // 1-byte pad + 4-byte dependency + 1-byte weight
+	PayloadHeaderSize = 9 // 3-byte length + 1-byte type + 1-byte flags + 4-byte identifier
+	DataHeaderSize    = 1 // 1-byte pad
+	MessageHeaderSize = 6 // 1-byte pad + 4-byte dependency + 1-byte weight (HeadersHeader in C++)
 )
 
-// Control commands (Client → Host)
+// Control command headers (Client → Host)
 const (
 	HeaderRequest = "Request"
 	HeaderConnect = "Connect"
 	HeaderSeek    = "Seek"
 	HeaderPlay    = "Play"
 	HeaderPause   = "Pause"
-	HeaderSendFS  = "SendFS"
 
 	// Request values
 	RequestTargetList = "TargetList"
@@ -56,25 +40,29 @@ const (
 	SeekQuit  = "Quit"
 )
 
-// Status responses (Host → Client)
+// Format constants for audio encoding
 const (
-	HeaderStatus     = "Status"
-	HeaderTargetList = "TargetList"
-	HeaderTag        = "Tag"
-	HeaderLastTime   = "LastTime"
-	HeaderSendSize   = "SendSize"
-	HeaderCycleTime  = "CycleTime"
+	FormatPCM = 0 // PCM audio format
+)
+
+// FormatID represents audio format specification
+type FormatID struct {
+	SampleRate    uint32 // Sample rate in Hz
+	BitsPerSample uint32 // Bits per sample (8, 16, 24, 32)
+	Channels      uint32 // Number of channels
+	Format        uint32 // Format type (FormatPCM, etc.)
+}
+
+// Response headers (Host → Client)
+const (
+	HeaderStatus   = "Status"
+	HeaderLastTime = "LastTime"
+	HeaderTag      = "Tag"
 
 	// Status values
 	StatusPlay       = "Play"
 	StatusPause      = "Pause"
 	StatusDisconnect = "Disconnect"
-)
-
-// Special tag markers
-const (
-	TagLoop = "@@Diretta-TAG-LOOP@@"
-	TagQuit = "@@Diretta-TAG-QUIT@@"
 )
 
 // PayloadHeader is the frame header for all messages (9 bytes)
@@ -119,16 +107,17 @@ type DataHeader struct {
 	Pad uint8
 }
 
-// CommandHeader is the sub-header for command messages (6 bytes)
-type CommandHeader struct {
+// MessageHeader is the sub-header for command messages (6 bytes)
+// Called HeadersHeader in C++, CommandHeader in original Go code
+type MessageHeader struct {
 	Pad        uint8
 	Dependency uint32
 	Weight     uint8
 }
 
-// Encode serializes CommandHeader to wire format (6 bytes, big-endian)
-func (h *CommandHeader) Encode() []byte {
-	buf := make([]byte, CommandHeaderSize)
+// Encode serializes MessageHeader to wire format (6 bytes, big-endian)
+func (h *MessageHeader) Encode() []byte {
+	buf := make([]byte, MessageHeaderSize)
 	buf[0] = h.Pad
 	binary.BigEndian.PutUint32(buf[1:5], h.Dependency)
 	buf[5] = h.Weight
@@ -153,7 +142,7 @@ func (msg *FrameMessage) AddHeader(key, value string) {
 }
 
 // Encode serializes FrameMessage to wire format with frame wrapper
-// Format: PayloadHeader + CommandHeader + "key=value\r\n" pairs
+// Format: PayloadHeader + MessageHeader + "key=value\r\n" pairs
 func (msg *FrameMessage) Encode() []byte {
 	// Build the payload (key=value\r\n pairs)
 	var payload bytes.Buffer
@@ -164,16 +153,16 @@ func (msg *FrameMessage) Encode() []byte {
 		payload.WriteString("\r\n")
 	}
 
-	// Create command header
-	cmdHeader := &CommandHeader{
+	// Create message header
+	msgHeader := &MessageHeader{
 		Pad:        0,
 		Dependency: 0,
 		Weight:     0,
 	}
-	cmdHeaderBytes := cmdHeader.Encode()
+	msgHeaderBytes := msgHeader.Encode()
 
-	// Calculate total payload length (command header + key=value pairs)
-	payloadLength := uint32(len(cmdHeaderBytes) + payload.Len())
+	// Calculate total payload length (message header + key=value pairs)
+	payloadLength := uint32(len(msgHeaderBytes) + payload.Len())
 
 	// Create payload header
 	frameHeader := &PayloadHeader{
@@ -185,9 +174,9 @@ func (msg *FrameMessage) Encode() []byte {
 	frameHeaderBytes := frameHeader.Encode()
 
 	// Combine all parts
-	result := make([]byte, 0, len(frameHeaderBytes)+len(cmdHeaderBytes)+payload.Len())
+	result := make([]byte, 0, len(frameHeaderBytes)+len(msgHeaderBytes)+payload.Len())
 	result = append(result, frameHeaderBytes...)
-	result = append(result, cmdHeaderBytes...)
+	result = append(result, msgHeaderBytes...)
 	result = append(result, payload.Bytes()...)
 
 	return result
@@ -295,11 +284,11 @@ func ParseFrameMessage(r *bufio.Reader) (*FrameMessage, error) {
 		return nil, fmt.Errorf("unexpected message type: %d (expected command type 1)", header.Type)
 	}
 
-	// Skip command header (6 bytes)
-	if len(payloadBuf) < CommandHeaderSize {
-		return nil, fmt.Errorf("payload too short for command header")
+	// Skip message header (6 bytes)
+	if len(payloadBuf) < MessageHeaderSize {
+		return nil, fmt.Errorf("payload too short for message header")
 	}
-	payloadData := payloadBuf[CommandHeaderSize:]
+	payloadData := payloadBuf[MessageHeaderSize:]
 
 	// Parse key=value\r\n pairs
 	msg := NewFrameMessage()
@@ -339,4 +328,10 @@ func ParseFrameMessage(r *bufio.Reader) (*FrameMessage, error) {
 	}
 
 	return msg, nil
+}
+
+// Get returns the value for a given header key
+func (msg *FrameMessage) Get(key string) (string, bool) {
+	val, ok := msg.Headers[key]
+	return val, ok
 }

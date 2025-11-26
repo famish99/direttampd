@@ -144,6 +144,13 @@ func (w *WavFile) GetFormat() (C.MPCFormatHandle, error) {
 	return format, nil
 }
 
+// FreeFormat releases a format handle
+func FreeFormat(format C.MPCFormatHandle) {
+	if format != nil {
+		C.mpc_free_format(format)
+	}
+}
+
 // GetTitle returns the title/metadata
 func (w *WavFile) GetTitle() string {
 	return C.GoString(C.mpc_wav_get_title(w.handle))

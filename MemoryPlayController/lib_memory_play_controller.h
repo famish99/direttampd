@@ -153,6 +153,13 @@ void mpc_wav_close(MPCWavHandle handle);
 int mpc_wav_get_format(MPCWavHandle handle, MPCFormatHandle* format);
 
 /**
+ * Free a format handle previously returned by mpc_wav_get_format().
+ *
+ * @param format The format handle to free
+ */
+void mpc_free_format(MPCFormatHandle format);
+
+/**
  * Get the title/metadata from a WAV file.
  *
  * @param handle The WAV handle

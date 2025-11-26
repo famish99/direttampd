@@ -25,6 +25,7 @@ var (
 	playFile    = flag.String("play", "", "Play a file or URL directly")
 	mpdAddr     = flag.String("mpd-addr", "localhost:6600", "MPD server listen address")
 	daemonMode  = flag.Bool("daemon", false, "Run as MPD server daemon (otherwise play URLs and exit)")
+	useNative   = flag.Bool("native", false, "Use native Go implementation instead of CGo for MemoryPlay protocol")
 )
 
 func main() {
@@ -70,7 +71,7 @@ func main() {
 	}
 
 	// Create player
-	p, err := player.NewPlayer(cfg)
+	p, err := player.NewPlayer(cfg, *useNative)
 	if err != nil {
 		log.Fatalf("Failed to create player: %v", err)
 	}
