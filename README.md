@@ -181,21 +181,36 @@ MPD Client → MPD Server → Player → Decoder (ffmpeg) → Cache → MemoryPl
 
 ### Components
 
-- **`internal/mpd`**: MPD protocol server implementation
-- **`internal/memoryplay`**: MemoryPlay protocol client with CGO bindings
-  - `cgo_bindings.go`: C library interface with session management
-  - `client.go`: High-level Go wrapper for device control
-  - `protocol.go`: Diretta wire protocol implementation
+- **`internal/mpd`**: MPD protocol server implementation (organized into handlers)
+  - `server.go`: Core server and connection management
+  - `router.go`: Command parsing and routing
+  - `handlers_info.go`: Information commands (status, currentsong, playlistinfo)
+  - `handlers_playback.go`: Playback control (play, pause, stop, next, previous)
+  - `handlers_playlist.go`: Playlist management (add, delete, move, clear)
+  - `metadata.go`: Track metadata extraction
+  - `idle.go`: Idle subsystem for client notifications
+- **`internal/memoryplay`**: MemoryPlay protocol client with dual implementation
+  - `cgo_bindings.go`: C library interface via CGO
+  - `native_session.go`: Pure Go TCP implementation
+  - `client.go`: High-level client wrapper
+  - `protocol.go`: Diretta wire protocol definitions
 - **`MemoryPlayController/`**: C++ shared library for Diretta protocol
   - Implements device discovery via IPv6 multicast
   - ACQUA TCP protocol for audio streaming
   - FLAC audio format support
   - Session control (play, pause, seek, status)
+- **`internal/player`**: Playback coordinator (organized by responsibility)
+  - `player.go`: Core player structure and initialization
+  - `playback.go`: Public playback API
+  - `playback_internal.go`: Internal playback implementation
+  - `discovery.go`: Host and target discovery
+  - `state.go`: Playback state management
+  - `tracks.go`: Track caching and preparation
+  - `transition.go`: Playlist transition handling
 - **`internal/decoder`**: FFmpeg wrapper for audio decoding
-- **`internal/cache`**: LRU disk cache with format headers
+- **`internal/cache`**: LRU disk cache with concurrent download protection
 - **`internal/config`**: Configuration management
 - **`internal/playlist`**: Playlist/queue management
-- **`internal/player`**: Main playback coordinator
 
 ## Development
 
@@ -207,15 +222,37 @@ direttampd/
 │   └── direttampd/              # Main application
 ├── internal/
 │   ├── cache/                   # Disk cache implementation
+│   │   ├── diskcache.go         # LRU cache with download deduplication
+│   │   └── format.go            # Cache format utilities (legacy)
 │   ├── config/                  # Configuration handling
+│   │   └── config.go            # YAML config and target management
 │   ├── decoder/                 # Audio decoding (ffmpeg)
-│   ├── memoryplay/              # MemoryPlay protocol & CGO bindings
-│   │   ├── cgo_bindings.go      # C library interface
+│   │   └── ffmpeg.go            # FFmpeg wrapper for format probing/decoding
+│   ├── memoryplay/              # MemoryPlay protocol client
+│   │   ├── cgo_bindings.go      # C library interface via CGO
+│   │   ├── native_session.go    # Pure Go TCP session implementation
 │   │   ├── client.go            # High-level client wrapper
-│   │   └── protocol.go          # Diretta wire protocol
+│   │   └── protocol.go          # Diretta wire protocol definitions
 │   ├── mpd/                     # MPD protocol server
+│   │   ├── server.go            # Server core and connection handling
+│   │   ├── connection.go        # Per-client connection management
+│   │   ├── router.go            # Command parsing and routing
+│   │   ├── handlers_info.go     # Info commands (status, currentsong, etc.)
+│   │   ├── handlers_playback.go # Playback commands (play, pause, stop, etc.)
+│   │   ├── handlers_playlist.go # Playlist commands (add, delete, move, etc.)
+│   │   ├── metadata.go          # Track metadata extraction
+│   │   ├── idle.go              # Idle subsystem for notifications
+│   │   └── helpers.go           # Helper utilities
 │   ├── player/                  # Playback coordinator
+│   │   ├── player.go            # Core player structure
+│   │   ├── playback.go          # Public playback API
+│   │   ├── playback_internal.go # Internal playback logic
+│   │   ├── discovery.go         # Host/target discovery
+│   │   ├── state.go             # State management
+│   │   ├── tracks.go            # Track caching and prep
+│   │   └── transition.go        # Playlist transition handling
 │   └── playlist/                # Playlist management
+│       └── playlist.go          # Thread-safe playlist queue
 ├── MemoryPlayController/        # C++ shared library
 │   ├── lib_memory_play_controller.h    # C API header
 │   ├── lib_memory_play_controller.cpp  # Implementation
