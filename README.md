@@ -152,21 +152,14 @@ Supported MPD commands:
 ## How It Works
 
 1. **URL Processing**: Accepts file:// or http(s):// URLs via MPD or CLI
-2. **Cache Check**: Looks for decoded audio in disk cache
-3. **Decode**: If not cached, uses ffmpeg to decode to native PCM format
-4. **Stream**: Sends audio to MemoryPlay target via TCP/IPv6
-5. **Cache**: Asynchronously writes decoded audio to disk for future use
+2. **Cache Check**: Looks for decoded WAV file in disk cache
+3. **Decode**: If not cached, uses ffmpeg to decode to WAV format (preserving native sample rate/bit depth)
+4. **Stream**: MemoryPlayController C++ library uploads WAV to MemoryPlay host via TCP/IPv6
+5. **Cache**: WAV file is stored in disk cache for future use
 
 ### Cache Format
 
-Cached files include a 20-byte header:
-- Magic: "DPCA" (4 bytes)
-- Version: 0x01 (1 byte)
-- Sample Rate: uint32 (4 bytes)
-- Bits Per Sample: uint32 (4 bytes)
-- Channels: uint32 (4 bytes)
-- Reserved: padding (3 bytes)
-- Followed by raw PCM audio data
+Cached files are stored as standard WAV files with their original native format preserved (sample rate, bit depth, and channels). The MemoryPlayController C++ library can read WAV, FLAC, DSF, DFF, and AIFF formats directly, so decoded files are saved as WAV for maximum compatibility.
 
 ## Architecture
 
