@@ -12,9 +12,10 @@ type PlaybackBackend interface {
 	StartPlayback() error                     // Start playing prepared track(s)
 
 	// Playback control
-	Play() error  // Resume playback
-	Pause() error // Pause playback
-	Stop() error  // Quit current session
+	Play() error                      // Resume playback
+	Pause() error                     // Pause playback
+	Stop() error                      // Quit current session
+	Seek(positionSeconds int64) error // Seek to absolute position in seconds
 
 	// Playback state queries
 	GetTrackDuration() (int64, error) // Returns total duration in seconds

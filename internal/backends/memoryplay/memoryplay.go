@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"log"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/famish99/direttampd/internal/cache"
 	"github.com/famish99/direttampd/internal/config"
@@ -25,6 +27,8 @@ type Backend struct {
 	targetName           string
 	useNative            bool
 	currentTrackDuration int64 // Duration in seconds
+	seeking              bool  // True when a seek operation is in progress
+	seekMu               sync.Mutex
 }
 
 // New creates a new MemoryPlay backend with discovery
@@ -252,6 +256,49 @@ func (b *Backend) Stop() error {
 	return nil
 }
 
+// Seek seeks to an absolute position in seconds
+func (b *Backend) Seek(positionSeconds int64) error {
+	if b.client == nil {
+		return fmt.Errorf("no client available")
+	}
+
+	// Set seeking flag to prevent track completion detection during seek
+	b.seekMu.Lock()
+	b.seeking = true
+	b.seekMu.Unlock()
+
+	defer func() {
+		b.seekMu.Lock()
+		b.seeking = false
+		b.seekMu.Unlock()
+	}()
+
+	// Perform the seek
+	if err := b.client.SeekAbsolute(positionSeconds); err != nil {
+		return err
+	}
+
+	// Wait for time reporting to resume after seek
+	// (MemoryPlay temporarily returns -1 during seek operation)
+	maxRetries := 50 // 50 * 100ms = 5 seconds max wait
+	for i := 0; i < maxRetries; i++ {
+		time.Sleep(100 * time.Millisecond)
+		remaining, err := b.client.GetCurrentTime()
+		if err != nil {
+			// Network error - return immediately
+			return err
+		}
+		if remaining != -1 {
+			// Time reporting has resumed - seek completed successfully
+			log.Printf("Seek completed, time reporting resumed at %d seconds remaining", remaining)
+			return nil
+		}
+	}
+
+	// Timeout waiting for time to resume
+	return fmt.Errorf("timeout waiting for seek to complete")
+}
+
 // GetTrackDuration returns the total duration of the current track in seconds
 func (b *Backend) GetTrackDuration() (int64, error) {
 	if b.currentTrackDuration == 0 {
@@ -294,6 +341,16 @@ func (b *Backend) GetElapsedTime() (int64, error) {
 func (b *Backend) IsTrackComplete() (bool, error) {
 	if b.client == nil {
 		return false, fmt.Errorf("no client available")
+	}
+
+	// Check if we're currently seeking - don't consider track complete during seek
+	b.seekMu.Lock()
+	isSeeking := b.seeking
+	b.seekMu.Unlock()
+
+	if isSeeking {
+		// Seek in progress - track is not complete
+		return false, nil
 	}
 
 	remaining, err := b.client.GetCurrentTime()

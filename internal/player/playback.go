@@ -215,3 +215,68 @@ func (p *Player) Quit() error {
 	}
 	return nil
 }
+
+// Seek seeks to an absolute position in seconds within the current track
+func (p *Player) Seek(positionSeconds int64) error {
+	p.mu.Lock()
+
+	if p.backend == nil {
+		p.mu.Unlock()
+		return fmt.Errorf("no backend available")
+	}
+
+	if p.state != StatePlaying && p.state != StatePaused {
+		p.mu.Unlock()
+		return fmt.Errorf("not playing or paused")
+	}
+
+	log.Printf("Seeking to position %d seconds", positionSeconds)
+	err := p.backend.Seek(positionSeconds)
+	p.mu.Unlock()
+
+	// Notify subsystem change so MPD clients update their display
+	if err == nil && p.notifySubsystem != nil {
+		p.notifySubsystem("player")
+	}
+
+	return err
+}
+
+// SeekCur seeks relative to current position (offsetSeconds can be positive or negative)
+func (p *Player) SeekCur(offsetSeconds int64) error {
+	p.mu.Lock()
+
+	if p.backend == nil {
+		p.mu.Unlock()
+		return fmt.Errorf("no backend available")
+	}
+
+	if p.state != StatePlaying && p.state != StatePaused {
+		p.mu.Unlock()
+		return fmt.Errorf("not playing or paused")
+	}
+
+	// Get current elapsed time
+	elapsed, err := p.backend.GetElapsedTime()
+	if err != nil {
+		p.mu.Unlock()
+		return fmt.Errorf("failed to get current time: %w", err)
+	}
+
+	// Calculate new absolute position
+	newPosition := elapsed + offsetSeconds
+	if newPosition < 0 {
+		newPosition = 0
+	}
+
+	log.Printf("Seeking by %d seconds to position %d seconds", offsetSeconds, newPosition)
+	err = p.backend.Seek(newPosition)
+	p.mu.Unlock()
+
+	// Notify subsystem change so MPD clients update their display
+	if err == nil && p.notifySubsystem != nil {
+		p.notifySubsystem("player")
+	}
+
+	return err
+}
