@@ -96,8 +96,8 @@ func (p *Player) Pause() error {
 	p.state = StatePaused
 
 	var err error
-	if p.client != nil {
-		err = p.client.Pause()
+	if p.backend != nil {
+		err = p.backend.Pause()
 	}
 	p.mu.Unlock()
 
@@ -119,8 +119,8 @@ func (p *Player) Resume() error {
 	}
 
 	log.Printf("Resuming playback from pause")
-	if p.client != nil {
-		if err := p.client.Play(); err != nil {
+	if p.backend != nil {
+		if err := p.backend.Play(); err != nil {
 			p.mu.Unlock()
 			return fmt.Errorf("failed to resume playback: %w", err)
 		}
@@ -210,8 +210,8 @@ func (p *Player) Stop() error {
 
 // Quit quits the current playback session
 func (p *Player) Quit() error {
-	if p.client != nil {
-		return p.client.Quit()
+	if p.backend != nil {
+		return p.backend.Stop()
 	}
-    return nil
+	return nil
 }

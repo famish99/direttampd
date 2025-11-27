@@ -58,3 +58,4 @@ go.work.sum
 /MemoryPlayController/MemoryPlayController.cpp
 /MemoryPlayController/WAV.cpp
 /MemoryPlayController/WAV.hpp
+/pkg/

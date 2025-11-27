@@ -27,26 +27,26 @@ type PlaybackTiming struct {
 // Returns nil if no track is currently playing or timing info is unavailable
 // Uses cached elapsed time updated by the polling loop to avoid blocking
 func (p *Player) GetPlaybackTiming() *PlaybackTiming {
+	// Get duration from backend (backend caches this)
+	duration, err := p.backend.GetTrackDuration()
+	if err != nil || duration <= 0 {
+		return nil
+	}
+
+	// Get cached elapsed time from polling loop
 	p.mu.Lock()
-	duration := p.currentTrackDuration
-	remaining := p.lastRemainingTime
+	elapsed := p.lastElapsedTime
 	p.mu.Unlock()
 
-// 	log.Printf("remaining: %d duration: %d", remaining, duration)
-
-	// Return nil if we don't have duration info
-	if duration <= 0 {
-		return nil
-	}
-
 	// Return nil if elapsed time is negative (not yet set or track finished)
-	if remaining < 0 {
+	if elapsed < 0 {
 		return nil
 	}
 
-    elapsed := duration - remaining
-	if elapsed < 0 {
-		elapsed = 0
+	// Calculate remaining time
+	remaining := duration - elapsed
+	if remaining < 0 {
+		remaining = 0
 	}
 
 	return &PlaybackTiming{
