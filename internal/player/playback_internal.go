@@ -21,7 +21,7 @@ func (p *Player) playbackLoop(ctx context.Context, pl *playlist.Playlist) {
 		select {
 		case <-ctx.Done():
 			log.Printf("Playback loop cancelled via context")
-            p.client.Quit()
+			_ = p.backend.Stop()
 			return
 		default:
 		}
@@ -39,7 +39,7 @@ func (p *Player) playbackLoop(ctx context.Context, pl *playlist.Playlist) {
 		track, err := pl.Current()
 		if err != nil {
 			log.Printf("Invalid current track")
-			p.Stop()
+			_ = p.Stop()
 			return
 		}
 
@@ -49,7 +49,7 @@ func (p *Player) playbackLoop(ctx context.Context, pl *playlist.Playlist) {
 		err = p.PlayTrack(track)
 		if err != nil {
 			log.Printf("Error playing track %s: %v", track.URL, err)
-            return
+			return
 		}
 
 		// Notify that player state changed (track started)
@@ -74,7 +74,7 @@ func (p *Player) playbackLoop(ctx context.Context, pl *playlist.Playlist) {
 		// Exit loop if interrupt requested it (e.g., Stop or PlayAt)
 		if shouldExit {
 			log.Printf("Playback loop exiting due to interrupt")
-			p.client.Quit()
+			_ = p.backend.Stop()
 			return
 		}
 
@@ -82,16 +82,16 @@ func (p *Player) playbackLoop(ctx context.Context, pl *playlist.Playlist) {
 		err = pl.CommitStaged()
 		if err != nil {
 			// Reached end of playlist or error
-			p.Stop()
-            return
+			_ = p.Stop()
+			return
 		}
 	}
 }
 
-// waitForCondition polls GetCurrentTime until checkFn returns true or timeout occurs
-func (p *Player) waitForCondition(checkFn func(int64, error) bool, timeout time.Duration, successMsg, timeoutMsg string) bool {
-	if p.client == nil {
-		return true // No client, nothing to wait for
+// waitForCondition polls backend until checkFn returns true or timeout occurs
+func (p *Player) waitForCondition(checkFn func() (bool, error), timeout time.Duration, successMsg, timeoutMsg string) bool {
+	if p.backend == nil {
+		return true // No backend, nothing to wait for
 	}
 
 	timer := time.NewTimer(timeout)
@@ -106,8 +106,12 @@ func (p *Player) waitForCondition(checkFn func(int64, error) bool, timeout time.
 			log.Printf(timeoutMsg)
 			return false
 		case <-ticker.C:
-			currentTime, err := p.client.GetCurrentTime()
-			if checkFn(currentTime, err) {
+			ok, err := checkFn()
+			if err != nil {
+				log.Printf("Error in waitForCondition: %v", err)
+				return false
+			}
+			if ok {
 				log.Printf(successMsg)
 				return true
 			}
@@ -119,7 +123,13 @@ func (p *Player) waitForCondition(checkFn func(int64, error) bool, timeout time.
 // Returns true if playback started, false on timeout
 func (p *Player) waitForPlaybackStart() bool {
 	return p.waitForCondition(
-		func(time int64, err error) bool { return err == nil && time >= 0 },
+		func() (bool, error) {
+			elapsed, err := p.backend.GetElapsedTime()
+			if err != nil {
+				return false, nil // No error, just not started yet
+			}
+			return elapsed >= 0, nil
+		},
 		5*time.Second,
 		"Playback started",
 		"Timeout waiting for playback to start",
@@ -130,7 +140,9 @@ func (p *Player) waitForPlaybackStart() bool {
 // Returns true if playback stopped, false on timeout
 func (p *Player) waitForPlaybackStop() bool {
 	return p.waitForCondition(
-		func(time int64, err error) bool { return err != nil || time == -1 },
+		func() (bool, error) {
+			return p.backend.IsTrackComplete()
+		},
 		2*time.Second,
 		"Playback stopped",
 		"Timeout waiting for playback to stop",
@@ -140,7 +152,7 @@ func (p *Player) waitForPlaybackStop() bool {
 // waitForTrackCompletion polls until the track finishes or is interrupted
 // Returns (shouldNotify, shouldExitLoop) - whether to notify subsystem and whether to exit playback loop
 func (p *Player) waitForTrackCompletion(ctx context.Context, interruptCh <-chan playlist.InterruptEvent) (bool, bool) {
-	if p.client == nil {
+	if p.backend == nil {
 		return true, true // Default to notify, don't exit
 	}
 
@@ -161,7 +173,7 @@ func (p *Player) waitForTrackCompletion(ctx context.Context, interruptCh <-chan 
 		case <-ctx.Done():
 			// Playback loop cancelled (transition)
 			log.Printf("Track completion polling cancelled via context")
-			return false, true  // Exit loop
+			return false, true // Exit loop
 
 		case event := <-interruptCh:
 			// Interrupted by playlist event (Next/Previous/Stop)
@@ -179,25 +191,28 @@ func (p *Player) waitForTrackCompletion(ctx context.Context, interruptCh <-chan 
 				return false, true
 			}
 
-			// If paused, just continue waiting (don't check time)
+			// If paused, just continue waiting (don't check timing)
 			if state == StatePaused {
 				continue
 			}
 
-			// Get current playback time
-			currentTime, err := p.client.GetCurrentTime()
-			log.Printf("waitForTrackCompletion: GetCurrentTime() returned: %d", currentTime)
+			// Check if track is complete
+			complete, err := p.backend.IsTrackComplete()
 			if err != nil {
+				log.Printf("Error checking track completion: %v", err)
 				return false, true
 			}
 
-			// Cache the elapsed time for GetPlaybackTiming to use
-			p.mu.Lock()
-			p.lastRemainingTime = currentTime
-			p.mu.Unlock()
+			// Cache elapsed time for GetPlaybackTiming to use
+			elapsed, elapsedErr := p.backend.GetElapsedTime()
+			if elapsedErr == nil {
+				p.mu.Lock()
+				p.lastElapsedTime = elapsed
+				p.mu.Unlock()
+			}
 
-			// Track is finished when GetCurrentTime returns -1
-			if currentTime == -1 {
+			// Track is finished when IsTrackComplete returns true
+			if complete {
 				log.Printf("Track finished naturally")
 				return true, false // Natural completion - notify, don't exit
 			}

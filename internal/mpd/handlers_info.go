@@ -10,7 +10,7 @@ import (
 )
 
 // cmdStatus handles the 'status' command
-func (s *Server) cmdStatus(args []string) string {
+func (s *Server) cmdStatus(_ []string) string {
 	pl := s.player.GetPlaylist()
 
 	var status strings.Builder
@@ -58,18 +58,18 @@ func (s *Server) cmdStatus(args []string) string {
 
 // cmdOutputs handles the 'outputs' command
 // Returns the list of audio outputs (in this case, the Diretta target)
-func (s *Server) cmdOutputs(args []string) string {
-	// Get target info from player
-	_, _, targetName, _ := s.player.GetTargetInfo()
+func (s *Server) cmdOutputs(_ []string) string {
+	// Get output name from player
+	outputName := s.player.GetOutputName()
 
-	// If no target name is available, use a default
-	if targetName == "" {
-		targetName = "Diretta Output"
+	// If no output name is available, use a default
+	if outputName == "" {
+		outputName = "Diretta Output"
 	}
 
 	var response strings.Builder
 	response.WriteString("outputid: 0\n")
-	response.WriteString(fmt.Sprintf("outputname: %s\n", targetName))
+	response.WriteString(fmt.Sprintf("outputname: %s\n", outputName))
 	response.WriteString("outputenabled: 1\n")
 	response.WriteString("OK\n")
 
