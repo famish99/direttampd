@@ -76,12 +76,6 @@ func main() {
 		log.Fatalf("Failed to create player: %v", err)
 	}
 
-	// Connect to MemoryPlay target
-	if err := p.Connect(); err != nil {
-		log.Fatalf("Failed to connect to MemoryPlay: %v", err)
-	}
-	defer p.Disconnect()
-
 	// Daemon mode: run MPD server
 	if *daemonMode {
 		runDaemon(p)
@@ -97,23 +91,23 @@ func main() {
 	}
 
 	if len(urls) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: %s [options] <url1> [url2] ...\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "       %s --play <file|url>\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "\nOptions:\n")
+		_, _ = fmt.Fprintf(os.Stderr, "Usage: %s [options] <url1> [url2] ...\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "       %s --play <file|url>\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "\nOptions:\n")
 		flag.PrintDefaults()
-		fmt.Fprintf(os.Stderr, "\nExamples:\n")
-		fmt.Fprintf(os.Stderr, "  # Play a local file\n")
-		fmt.Fprintf(os.Stderr, "  %s --play /path/to/music.flac\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s --play ./song.mp3\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "\n  # Play remote URLs\n")
-		fmt.Fprintf(os.Stderr, "  %s --play http://stream.example.com/radio.mp3\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  %s http://stream.example.com/radio.mp3\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "\n  # Play multiple files\n")
-		fmt.Fprintf(os.Stderr, "  %s track01.flac track02.flac track03.flac\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "\n  # Run as MPD server daemon\n")
-		fmt.Fprintf(os.Stderr, "  %s --daemon\n", os.Args[0])
-		fmt.Fprintf(os.Stderr, "  mpc add http://stream.example.com/radio.mp3\n")
-		fmt.Fprintf(os.Stderr, "  mpc play\n")
+		_, _ = fmt.Fprintf(os.Stderr, "\nExamples:\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  # Play a local file\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  %s --play /path/to/music.flac\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "  %s --play ./song.mp3\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "\n  # Play remote URLs\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  %s --play http://stream.example.com/radio.mp3\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "  %s http://stream.example.com/radio.mp3\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "\n  # Play multiple files\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  %s track01.flac track02.flac track03.flac\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "\n  # Run as MPD server daemon\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  %s --daemon\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "  mpc add http://stream.example.com/radio.mp3\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  mpc play\n")
 		os.Exit(1)
 	}
 
@@ -190,8 +184,8 @@ func listAvailableHosts() error {
 	}
 	defer memoryplay.CleanupLibrary()
 
-	// Use player discovery function
-	hosts, err := player.DiscoverHosts()
+	// Discover hosts
+	hosts, err := memoryplay.DiscoverHosts()
 	if err != nil {
 		return err
 	}
@@ -232,7 +226,7 @@ func listAvailableTargets(hostAddr string) error {
 
 	if hostAddr == "" {
 		// Discover hosts and use the first one
-		hosts, err := player.DiscoverHosts()
+		hosts, err := memoryplay.DiscoverHosts()
 		if err != nil {
 			return err
 		}
@@ -249,7 +243,7 @@ func listAvailableTargets(hostAddr string) error {
 		fmt.Printf("Using discovered host: %s%%%d (%s)\n\n", hostIP, hostIfNum, hosts[0].TargetName)
 	} else {
 		// Use specified host - discover hosts to get interface number
-		hosts, err := player.DiscoverHosts()
+		hosts, err := memoryplay.DiscoverHosts()
 		if err != nil {
 			return err
 		}
@@ -275,8 +269,8 @@ func listAvailableTargets(hostAddr string) error {
 		}
 	}
 
-	// Use player discovery function to list targets
-	targets, err := player.DiscoverTargets(hostIP, hostIfNum)
+	// Discover targets
+	targets, err := memoryplay.DiscoverTargets(hostIP, hostIfNum)
 	if err != nil {
 		return err
 	}

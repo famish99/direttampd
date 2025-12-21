@@ -1,4 +1,4 @@
-package player
+package memoryplay
 
 import (
 	"fmt"
@@ -8,34 +8,6 @@ import (
 	"github.com/famish99/direttampd/internal/config"
 	"github.com/famish99/direttampd/internal/memoryplay"
 )
-
-// DiscoverHosts discovers all available MemoryPlay hosts.
-// Returns a list of all discovered hosts without selection.
-func DiscoverHosts() ([]memoryplay.HostInfo, error) {
-	log.Printf("Discovering MemoryPlay hosts...")
-	hosts, err := memoryplay.ListHosts()
-	if err != nil {
-		return nil, fmt.Errorf("failed to discover hosts: %w", err)
-	}
-	if len(hosts) == 0 {
-		return nil, fmt.Errorf("no MemoryPlay hosts found")
-	}
-	return hosts, nil
-}
-
-// DiscoverTargets discovers all available targets from a MemoryPlay host.
-// Returns a list of all discovered targets without selection.
-func DiscoverTargets(hostIP string, hostIfNum uint32) ([]memoryplay.TargetInfo, error) {
-	log.Printf("Discovering available targets...")
-	targets, err := memoryplay.ListTargets(hostIP, hostIfNum)
-	if err != nil {
-		return nil, fmt.Errorf("failed to discover targets: %w", err)
-	}
-	if len(targets) == 0 {
-		return nil, fmt.Errorf("no targets found on host")
-	}
-	return targets, nil
-}
 
 // DiscoverAndSelectHost discovers available MemoryPlay hosts and selects one based on config.
 // This function always performs discovery and returns the selected host info.

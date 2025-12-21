@@ -96,8 +96,8 @@ func (p *Player) Pause() error {
 	p.state = StatePaused
 
 	var err error
-	if p.client != nil {
-		err = p.client.Pause()
+	if p.backend != nil {
+		err = p.backend.Pause()
 	}
 	p.mu.Unlock()
 
@@ -119,8 +119,8 @@ func (p *Player) Resume() error {
 	}
 
 	log.Printf("Resuming playback from pause")
-	if p.client != nil {
-		if err := p.client.Play(); err != nil {
+	if p.backend != nil {
+		if err := p.backend.Play(); err != nil {
 			p.mu.Unlock()
 			return fmt.Errorf("failed to resume playback: %w", err)
 		}
@@ -210,8 +210,73 @@ func (p *Player) Stop() error {
 
 // Quit quits the current playback session
 func (p *Player) Quit() error {
-	if p.client != nil {
-		return p.client.Quit()
+	if p.backend != nil {
+		return p.backend.Stop()
 	}
-    return nil
+	return nil
+}
+
+// Seek seeks to an absolute position in seconds within the current track
+func (p *Player) Seek(positionSeconds int64) error {
+	p.mu.Lock()
+
+	if p.backend == nil {
+		p.mu.Unlock()
+		return fmt.Errorf("no backend available")
+	}
+
+	if p.state != StatePlaying && p.state != StatePaused {
+		p.mu.Unlock()
+		return fmt.Errorf("not playing or paused")
+	}
+
+	log.Printf("Seeking to position %d seconds", positionSeconds)
+	err := p.backend.Seek(positionSeconds)
+	p.mu.Unlock()
+
+	// Notify subsystem change so MPD clients update their display
+	if err == nil && p.notifySubsystem != nil {
+		p.notifySubsystem("player")
+	}
+
+	return err
+}
+
+// SeekCur seeks relative to current position (offsetSeconds can be positive or negative)
+func (p *Player) SeekCur(offsetSeconds int64) error {
+	p.mu.Lock()
+
+	if p.backend == nil {
+		p.mu.Unlock()
+		return fmt.Errorf("no backend available")
+	}
+
+	if p.state != StatePlaying && p.state != StatePaused {
+		p.mu.Unlock()
+		return fmt.Errorf("not playing or paused")
+	}
+
+	// Get current elapsed time
+	elapsed, err := p.backend.GetElapsedTime()
+	if err != nil {
+		p.mu.Unlock()
+		return fmt.Errorf("failed to get current time: %w", err)
+	}
+
+	// Calculate new absolute position
+	newPosition := elapsed + offsetSeconds
+	if newPosition < 0 {
+		newPosition = 0
+	}
+
+	log.Printf("Seeking by %d seconds to position %d seconds", offsetSeconds, newPosition)
+	err = p.backend.Seek(newPosition)
+	p.mu.Unlock()
+
+	// Notify subsystem change so MPD clients update their display
+	if err == nil && p.notifySubsystem != nil {
+		p.notifySubsystem("player")
+	}
+
+	return err
 }

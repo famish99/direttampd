@@ -40,6 +40,12 @@ func (s *Server) handleCommand(line string) string {
 	case "previous":
 		return s.cmdPrevious(args)
 
+	case "seek":
+		return s.cmdSeek(args)
+
+	case "seekcur":
+		return s.cmdSeekCur(args)
+
 	case "status":
 		return s.cmdStatus(args)
 
@@ -80,7 +86,7 @@ func (s *Server) handleCommand(line string) string {
 		return "" // Client will close connection
 
 	default:
-// 		log.Fatalf("Unknown MPD command received: %s (full line: %s)", command, line)
+		// 		log.Fatalf("Unknown MPD command received: %s (full line: %s)", command, line)
 		return fmt.Sprintf("ACK [5@0] {%s} unknown command\n", command)
 	}
 }
