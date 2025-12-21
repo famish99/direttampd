@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  direttampd:
+    build: .
+    image: direttampd:latest
+    container_name: direttampd
+
+    # Use host network mode for Diretta protocol (IPv6 link-local and multicast support)
+    # This is required for proper MemoryPlay/Diretta communication
+    network_mode: host
+
+    # Restart policy for daemon mode
+    restart: unless-stopped
+
+    # Volumes for persistent data
+    volumes:
+      # Mount your custom configuration file here
+      - ./config.yaml:/etc/direttampd/config.yaml:ro
+
+      # Cache directory for downloaded audio files
+      - direttampd-cache:/var/cache/direttampd
+
+    # Environment variables (optional overrides)
+    environment:
+      # MPD server listen address
+      - MPD_ADDR=0.0.0.0:6600
+
+      # Config file path
+      - CONFIG_PATH=/etc/direttampd/config.yaml
+
+    # Optional: Use native Go implementation instead of CGo
+    # command: ["/app/direttampd", "--daemon", "--native", "--mpd-addr", "0.0.0.0:6600"]
+
+volumes:
+  # Named volume for cache persistence
+  direttampd-cache:
+    driver: local
