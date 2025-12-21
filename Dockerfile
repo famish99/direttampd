@@ -16,6 +16,10 @@ WORKDIR /build
 COPY . .
 
 # Build C++ library first
+# NOTE: MemoryPlayController directory must contain:
+#   - ACQUA/ directory with library files
+#   - Diretta/ directory with header files
+#   - libACQUA_*.a and libFind_*.a static libraries
 RUN cd MemoryPlayController && \
     make -f Makefile.lib && \
     cd ..
