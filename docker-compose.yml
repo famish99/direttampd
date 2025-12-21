@@ -32,6 +32,37 @@ services:
     # Optional: Use native Go implementation instead of CGo
     # command: ["/app/direttampd", "--daemon", "--native", "--mpd-addr", "0.0.0.0:6600"]
 
+  upmpdcli:
+    image: giof71/upmpdcli:latest
+    container_name: upmpdcli
+
+    # Use host network mode for UPnP/DLNA discovery and to access direttampd MPD server
+    network_mode: host
+
+    # Restart policy for daemon mode
+    restart: unless-stopped
+
+    # Depends on direttampd MPD server
+    depends_on:
+      - direttampd
+
+    # Environment variables for upmpdcli configuration
+    environment:
+      # MPD connection settings
+      - MPD_HOST=localhost
+      - MPD_PORT=6600
+
+      # UPnP/DLNA renderer settings
+      - UPMPD_FRIENDLY_NAME=Direttampd Renderer
+
+      # Optional: Customize these as needed
+      # - UPMPD_CHECKCONTENTFORMAT=0
+      # - UPMPD_LUMINCOMPAT=0
+
+    # Optional: Mount custom upmpdcli.conf if needed
+    # volumes:
+    #   - ./upmpdcli.conf:/etc/upmpdcli.conf:ro
+
 volumes:
   # Named volume for cache persistence
   direttampd-cache:
