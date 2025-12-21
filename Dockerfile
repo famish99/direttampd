@@ -27,6 +27,8 @@ RUN cd MemoryPlayController && \
 
 # Build Go application with CGO enabled
 ENV CGO_ENABLED=1
+# Clean Go build cache to ensure fresh build with latest CGO settings
+RUN go clean -cache -modcache
 RUN go build -o direttampd ./cmd/direttampd
 
 # Stage 2: Runtime environment
