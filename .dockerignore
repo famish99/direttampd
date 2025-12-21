@@ -1,0 +1,41 @@
+# Git files
+.git
+.gitignore
+
+# Docker files
+Dockerfile
+docker-compose.yml
+.dockerignore
+
+# Documentation
+*.md
+LICENSE
+
+# Build artifacts and test files
+*.o
+*.a
+*.so
+test_*
+direttampd
+
+# IDE and editor files
+.vscode
+.idea
+*.swp
+*.swo
+*~
+
+# Temporary files
+*.tmp
+*.log
+
+# Cache directories
+cache/
+tmp/
+
+# Config files (will be mounted as volumes)
+config.yaml
+direttampd.yaml
+
+# GitHub
+.github/

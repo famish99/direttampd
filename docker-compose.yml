@@ -1,0 +1,69 @@
+version: '3.8'
+
+services:
+  direttampd:
+    build: .
+    image: direttampd:latest
+    container_name: direttampd
+
+    # Use host network mode for Diretta protocol (IPv6 link-local and multicast support)
+    # This is required for proper MemoryPlay/Diretta communication
+    network_mode: host
+
+    # Restart policy for daemon mode
+    restart: unless-stopped
+
+    # Volumes for persistent data
+    volumes:
+      # Mount your custom configuration file here
+      - ./config.yaml:/etc/direttampd/config.yaml:ro
+
+      # Cache directory for downloaded audio files
+      - direttampd-cache:/var/cache/direttampd
+
+    # Environment variables (optional overrides)
+    environment:
+      # MPD server listen address
+      - MPD_ADDR=0.0.0.0:6600
+
+      # Config file path
+      - CONFIG_PATH=/etc/direttampd/config.yaml
+
+    # Optional: Use native Go implementation instead of CGo
+    # command: ["/app/direttampd", "--daemon", "--native", "--mpd-addr", "0.0.0.0:6600"]
+
+  upmpdcli:
+    image: giof71/upmpdcli:latest
+    container_name: upmpdcli
+
+    # Use host network mode for UPnP/DLNA discovery and to access direttampd MPD server
+    network_mode: host
+
+    # Restart policy for daemon mode
+    restart: unless-stopped
+
+    # Depends on direttampd MPD server
+    depends_on:
+      - direttampd
+
+    # Environment variables for upmpdcli configuration
+    environment:
+      # MPD connection settings
+      - MPD_HOST=localhost
+      - MPD_PORT=6600
+
+      # UPnP/DLNA renderer settings
+      - UPMPD_FRIENDLY_NAME=Direttampd Renderer
+
+      # Optional: Customize these as needed
+      # - UPMPD_CHECKCONTENTFORMAT=0
+      # - UPMPD_LUMINCOMPAT=0
+
+    # Optional: Mount custom upmpdcli.conf if needed
+    # volumes:
+    #   - ./upmpdcli.conf:/etc/upmpdcli.conf:ro
+
+volumes:
+  # Named volume for cache persistence
+  direttampd-cache:
+    driver: local
