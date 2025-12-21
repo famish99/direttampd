@@ -13,7 +13,7 @@ LICENSE
 
 # Build artifacts and test files
 *.o
-*.a
+# *.a - Commented out to allow ACQUA and Find library files to be copied
 *.so
 test_*
 direttampd
