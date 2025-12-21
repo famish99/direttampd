@@ -20,8 +20,9 @@ COPY . .
 #   - ACQUA/ directory with library files
 #   - Diretta/ directory with header files
 #   - libACQUA_*.a and libDirettaHost_*.a static libraries
+# Only build the library, skip test programs (they require newer glibc)
 RUN cd MemoryPlayController && \
-    make -f Makefile.lib && \
+    make -f Makefile.lib libmemoryplaycontroller.a && \
     cd ..
 
 # Build Go application with CGO enabled
