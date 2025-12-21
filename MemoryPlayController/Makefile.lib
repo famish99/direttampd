@@ -39,7 +39,7 @@ CXXFLAGS = $(CFLAGS)
 LDFLAGS_TEST = -pthread -lstdc++ -lm -static
 
 # Static libraries needed (FLAC removed)
-STATIC_LIBS = -L./ -lFind$(ARCH_SUFFIX) -lACQUA$(ARCH_SUFFIX)
+STATIC_LIBS = -L./ -lDirettaHost$(ARCH_SUFFIX) -lACQUA$(ARCH_SUFFIX)
 
 # Library sources and objects
 LIB_SRC = lib_memory_play_controller.cpp

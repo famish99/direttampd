@@ -19,7 +19,7 @@ COPY . .
 # NOTE: MemoryPlayController directory must contain:
 #   - ACQUA/ directory with library files
 #   - Diretta/ directory with header files
-#   - libACQUA_*.a and libFind_*.a static libraries
+#   - libACQUA_*.a and libDirettaHost_*.a static libraries
 RUN cd MemoryPlayController && \
     make -f Makefile.lib && \
     cd ..
