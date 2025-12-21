@@ -3,7 +3,7 @@ package memoryplay
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../MemoryPlayController
 #cgo linux,amd64 LDFLAGS: ${SRCDIR}/../../MemoryPlayController/libmemoryplaycontroller.a ${SRCDIR}/../../MemoryPlayController/libDirettaHost_x64-linux-15v2.a ${SRCDIR}/../../MemoryPlayController/libACQUA_x64-linux-15v2.a -lstdc++ -lm -lpthread
-#cgo linux,arm64 LDFLAGS: ${SRCDIR}/../../MemoryPlayController/libmemoryplaycontroller.a ${SRCDIR}/../../MemoryPlayController/libDirettaHost_aarch64-linux-15.a ${SRCDIR}/../../MemoryPlayController/libACQUA_aarch64-linux-15.a -lstdc++ -lm -lpthread
+#cgo linux,arm64 LDFLAGS: ${SRCDIR}/../../MemoryPlayController/libmemoryplaycontroller.a ${SRCDIR}/../../MemoryPlayController/libDirettaHost_aarch64-linux-musl15.a ${SRCDIR}/../../MemoryPlayController/libACQUA_aarch64-linux-musl15.a -lstdc++ -lm -lpthread
 #include "lib_memory_play_controller.h"
 #include <stdlib.h>
 */
