@@ -1,9 +1,11 @@
+//go:build linux
+
 package memoryplay
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../MemoryPlayController
-#cgo linux,amd64 LDFLAGS: ${SRCDIR}/../../MemoryPlayController/libmemoryplaycontroller.a ${SRCDIR}/../../MemoryPlayController/libDirettaHost_x64-linux-15v2.a ${SRCDIR}/../../MemoryPlayController/libACQUA_x64-linux-15v2.a -lstdc++ -lm -lpthread
-#cgo linux,arm64 LDFLAGS: ${SRCDIR}/../../MemoryPlayController/libmemoryplaycontroller.a ${SRCDIR}/../../MemoryPlayController/libDirettaHost_aarch64-linux-15.a ${SRCDIR}/../../MemoryPlayController/libACQUA_aarch64-linux-15.a -lstdc++ -lm -lpthread
+#cgo linux,amd64 LDFLAGS: ${SRCDIR}/../../MemoryPlayController/libmemoryplaycontroller.a ${SRCDIR}/../../MemoryPlayController/lib/libDirettaHost_x64-linux-15v2.a ${SRCDIR}/../../MemoryPlayController/lib/libACQUA_x64-linux-15v2.a -lstdc++ -lm -lpthread
+#cgo linux,arm64 LDFLAGS: ${SRCDIR}/../../MemoryPlayController/libmemoryplaycontroller.a ${SRCDIR}/../../MemoryPlayController/lib/libDirettaHost_aarch64-linux-15.a ${SRCDIR}/../../MemoryPlayController/lib/libACQUA_aarch64-linux-15.a -lstdc++ -lm -lpthread
 #include "lib_memory_play_controller.h"
 #include <stdlib.h>
 */
@@ -194,15 +196,6 @@ func (s *Session) Quit() error {
 	return nil
 }
 
-// PlaybackStatus represents playback status
-type PlaybackStatus int
-
-const (
-	StatusDisconnected PlaybackStatus = 0
-	StatusPlaying      PlaybackStatus = 1
-	StatusPaused       PlaybackStatus = 2
-)
-
 // GetPlayStatus returns current playback status
 func (s *Session) GetPlayStatus() (PlaybackStatus, error) {
 	s.mu.Lock()
@@ -245,11 +238,6 @@ func (s *Session) GetCurrentTime() (int64, error) {
 		return -1, fmt.Errorf("mpc_session_get_current_time failed: %s", C.GoString(C.mpc_error_string(ret)))
 	}
 	return int64(timeSeconds), nil
-}
-
-// TagInfo represents a tag entry
-type TagInfo struct {
-	Tag string // Format: "INDEX:TIME:NAME"
 }
 
 // GetTagList returns the list of tags

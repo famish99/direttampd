@@ -10,6 +10,7 @@
 *.d
 *.a
 *.o
+*.lib
 
 # Test binary, built with `go test -c`
 *.test
@@ -59,3 +60,7 @@ go.work.sum
 /MemoryPlayController/WAV.cpp
 /MemoryPlayController/WAV.hpp
 /pkg/
+/MemoryPlayController/doc/
+/MemoryPlayController/Host/
+/MemoryPlayController/SinHost/
+/MemoryPlayController/memo_host.txt

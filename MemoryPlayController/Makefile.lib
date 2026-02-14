@@ -32,7 +32,7 @@ LIB_SO = $(LIB_NAME).so
 LIB_A = $(LIB_NAME).a
 
 # Compiler flags
-CFLAGS = -I . -std=c++17 -D_GLIBCXX_USE_NANOSLEEP -fchar8_t $(CFLAGS_DEF) -O2
+CFLAGS = -I . -I Host -std=c++17 -D_GLIBCXX_USE_NANOSLEEP -fchar8_t $(CFLAGS_DEF) -O2
 CXXFLAGS = $(CFLAGS)
 
 # Linker flags for test executables (static linking)
