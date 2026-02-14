@@ -10,8 +10,13 @@ services:
     # This is required for proper MemoryPlay/Diretta communication
     network_mode: host
 
+    # Layer 2 capabilities required for Diretta raw Ethernet frame access
+    cap_add:
+      - NET_RAW    # Raw socket access for layer 2 packet send/receive
+      - NET_ADMIN  # Network interface configuration and low-level operations
+
     # Restart policy for daemon mode
-    restart: unless-stopped
+#    restart: unless-stopped
 
     # Volumes for persistent data
     volumes:
@@ -31,6 +36,7 @@ services:
 
     # Optional: Use native Go implementation instead of CGo
     # command: ["/app/direttampd", "--daemon", "--native", "--mpd-addr", "0.0.0.0:6600"]
+    command: ["/app/direttampd", "-host", "fd6a:4520:9ef6:44da:d2fd:7871:2ddb:2042", "-list-targets"]
 
   upmpdcli:
     image: giof71/upmpdcli:latest

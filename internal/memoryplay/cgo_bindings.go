@@ -1,9 +1,11 @@
+//go:build linux
+
 package memoryplay
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../MemoryPlayController
-#cgo linux,amd64 LDFLAGS: ${SRCDIR}/../../MemoryPlayController/libmemoryplaycontroller.a ${SRCDIR}/../../MemoryPlayController/libDirettaHost_x64-linux-15v2.a ${SRCDIR}/../../MemoryPlayController/libACQUA_x64-linux-15v2.a -lstdc++ -lm -lpthread
-#cgo linux,arm64 LDFLAGS: ${SRCDIR}/../../MemoryPlayController/libmemoryplaycontroller.a ${SRCDIR}/../../MemoryPlayController/libDirettaHost_aarch64-linux-15.a ${SRCDIR}/../../MemoryPlayController/libACQUA_aarch64-linux-15.a -lstdc++ -lm -lpthread
+#cgo linux,amd64 LDFLAGS: ${SRCDIR}/../../MemoryPlayController/libmemoryplaycontroller.a ${SRCDIR}/../../MemoryPlayController/lib/libDirettaHost_x64-linux-15v2.a ${SRCDIR}/../../MemoryPlayController/lib/libACQUA_x64-linux-15v2.a -lstdc++ -lm -lpthread
+#cgo linux,arm64 LDFLAGS: ${SRCDIR}/../../MemoryPlayController/libmemoryplaycontroller.a ${SRCDIR}/../../MemoryPlayController/lib/libDirettaHost_aarch64-linux-15.a ${SRCDIR}/../../MemoryPlayController/lib/libACQUA_aarch64-linux-15.a -lstdc++ -lm -lpthread
 #include "lib_memory_play_controller.h"
 #include <stdlib.h>
 */
@@ -30,15 +32,6 @@ func InitLibrary(enableLogging, verboseMode bool) error {
 // CleanupLibrary releases library resources
 func CleanupLibrary() {
 	C.mpc_cleanup()
-}
-
-// HostInfo represents a discovered MemoryPlay host
-type HostInfo struct {
-	IPAddress       string
-	InterfaceNumber uint32
-	TargetName      string
-	OutputName      string
-	IsLoopback      bool
 }
 
 // ListHosts discovers available MemoryPlay hosts on the network
@@ -69,13 +62,6 @@ func ListHosts() ([]HostInfo, error) {
 	}
 
 	return hosts, nil
-}
-
-// TargetInfo represents a Diretta target device
-type TargetInfo struct {
-	IPAddress       string
-	InterfaceNumber uint32
-	TargetName      string
 }
 
 // ListTargets lists available Diretta targets from a host
@@ -136,19 +122,19 @@ func (w *WavFile) Close() {
 }
 
 // GetFormat returns the audio format handle
-func (w *WavFile) GetFormat() (C.MPCFormatHandle, error) {
+func (w *WavFile) GetFormat() (*FormatHandle, error) {
 	var format C.MPCFormatHandle
 	ret := C.mpc_wav_get_format(w.handle, &format)
 	if ret != C.MPC_SUCCESS {
 		return nil, fmt.Errorf("mpc_wav_get_format failed: %s", C.GoString(C.mpc_error_string(ret)))
 	}
-	return format, nil
+	return &FormatHandle{handle: format}, nil
 }
 
 // FreeFormat releases a format handle
-func FreeFormat(format C.MPCFormatHandle) {
-	if format != nil {
-		C.mpc_free_format(format)
+func FreeFormat(fh *FormatHandle) {
+	if fh != nil && fh.handle != nil {
+		C.mpc_free_format(fh.handle.(C.MPCFormatHandle))
 	}
 }
 
@@ -163,7 +149,7 @@ func (w *WavFile) GetIndex() int {
 }
 
 // UploadAudio uploads audio files to a MemoryPlay host
-func UploadAudio(hostAddress string, interfaceNumber uint32, wavFiles []*WavFile, format C.MPCFormatHandle, loopMode bool) error {
+func UploadAudio(hostAddress string, interfaceNumber uint32, wavFiles []*WavFile, fh *FormatHandle, loopMode bool) error {
 	if len(wavFiles) == 0 {
 		return fmt.Errorf("no audio files provided")
 	}
@@ -182,7 +168,7 @@ func UploadAudio(hostAddress string, interfaceNumber uint32, wavFiles []*WavFile
 		C.uint32_t(interfaceNumber),
 		&cHandles[0],
 		C.size_t(len(wavFiles)),
-		format,
+		fh.handle.(C.MPCFormatHandle),
 		C.bool(loopMode),
 	)
 
