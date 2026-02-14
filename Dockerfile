@@ -1,13 +1,28 @@
 # Multi-stage Dockerfile for Direttampd
-# Stage 1: Build environment
-FROM golang:1.21-bookworm AS builder
+# Stage 1: Build environment with newer glibc
+FROM ubuntu:24.04 AS builder
 
-# Install build dependencies
+# Install build dependencies including Go
 RUN apt-get update && apt-get install -y \
     build-essential \
     g++ \
     make \
+    wget \
     && rm -rf /var/lib/apt/lists/*
+
+# Install Go 1.21 (architecture-aware)
+ARG TARGETARCH
+RUN if [ "$TARGETARCH" = "amd64" ]; then \
+        wget -q https://go.dev/dl/go1.21.13.linux-amd64.tar.gz && \
+        tar -C /usr/local -xzf go1.21.13.linux-amd64.tar.gz && \
+        rm go1.21.13.linux-amd64.tar.gz; \
+    else \
+        wget -q https://go.dev/dl/go1.21.13.linux-arm64.tar.gz && \
+        tar -C /usr/local -xzf go1.21.13.linux-arm64.tar.gz && \
+        rm go1.21.13.linux-arm64.tar.gz; \
+    fi
+
+ENV PATH="/usr/local/go/bin:${PATH}"
 
 # Set working directory
 WORKDIR /build
@@ -19,9 +34,10 @@ COPY . .
 # NOTE: MemoryPlayController directory must contain:
 #   - ACQUA/ directory with library files
 #   - Diretta/ directory with header files
-#   - libACQUA_*.a and libFind_*.a static libraries
+#   - libACQUA_*.a and libDirettaHost_*.a static libraries
+# Only build the library, skip test programs
 RUN cd MemoryPlayController && \
-    make -f Makefile.lib && \
+    make -f Makefile.lib libmemoryplaycontroller.a && \
     cd ..
 
 # Build Go application with CGO enabled
@@ -29,7 +45,7 @@ ENV CGO_ENABLED=1
 RUN go build -o direttampd ./cmd/direttampd
 
 # Stage 2: Runtime environment
-FROM debian:bookworm-slim
+FROM ubuntu:24.04
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y \
