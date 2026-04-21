@@ -73,4 +73,4 @@ ENV MPD_ADDR=0.0.0.0:6600 \
     CONFIG_PATH=/etc/direttampd/config.yaml
 
 # Run as daemon by default
-CMD ["/app/direttampd", "--daemon", "--mpd-addr", "${MPD_ADDR}", "--config", "${CONFIG_PATH}"]
+CMD ["/app/direttampd", "--mpd", "--mpd-addr", "${MPD_ADDR}", "--config", "${CONFIG_PATH}"]

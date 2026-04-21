@@ -35,7 +35,7 @@ services:
       - CONFIG_PATH=/etc/direttampd/config.yaml
 
     # Optional: Use native Go implementation instead of CGo
-    # command: ["/app/direttampd", "--daemon", "--native", "--mpd-addr", "0.0.0.0:6600"]
+    # command: ["/app/direttampd", "--mpd", "--native", "--mpd-addr", "0.0.0.0:6600"]
     command: ["/app/direttampd", "-host", "fd6a:4520:9ef6:44da:d2fd:7871:2ddb:2042", "-list-targets"]
 
   upmpdcli:
