@@ -87,7 +87,7 @@ Run as an MPD server that any MPD client can connect to:
 
 ```bash
 # Start daemon (default: localhost:6600)
-direttampd --daemon
+direttampd --mpd
 
 # In another terminal, use MPD clients:
 mpc add http://radio.example.com/stream.mp3
@@ -96,6 +96,22 @@ mpc play
 
 # Or use ncmpcpp, ario, cantata, etc.
 ```
+
+### Slimproto (LMS / Lyrion) Mode
+
+Run as a Squeezebox-compatible player that registers with a Lyrion Music
+Server (LMS). LMS drives track selection and transport, direttampd fetches
+each HTTP stream and plays it through the MemoryPlay backend:
+
+```bash
+# Auto-discover the LMS server on the LAN
+direttampd --slimproto --slim-name "Living Room"
+
+# Or point at LMS explicitly
+direttampd --slimproto --slim-server 192.168.1.10 --slim-name "Living Room"
+```
+
+`--mpd` and `--slimproto` are mutually exclusive.
 
 ### Direct Mode
 
@@ -119,13 +135,13 @@ direttampd file:///intro.wav http://stream.com/main.mp3
 
 ```bash
 # Specify config file
-direttampd --config /path/to/config.yaml --daemon
+direttampd --config /path/to/config.yaml --mpd
 
 # Override target
-direttampd --target bedroom --daemon
+direttampd --target bedroom --mpd
 
 # Custom MPD listen address
-direttampd --mpd-addr 0.0.0.0:6600 --daemon
+direttampd --mpd-addr 0.0.0.0:6600 --mpd
 
 # List configured targets
 direttampd --list-targets

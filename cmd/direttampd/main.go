@@ -14,18 +14,23 @@ import (
 	"github.com/famish99/direttampd/internal/memoryplay"
 	"github.com/famish99/direttampd/internal/mpd"
 	"github.com/famish99/direttampd/internal/player"
+	"github.com/famish99/direttampd/internal/slimproto"
 )
 
 var (
-	configPath  = flag.String("config", getDefaultConfigPath(), "Path to configuration file")
-	host        = flag.String("host", "", "MemoryPlay host IP address (default: ::1, port is auto-discovered)")
-	targetName  = flag.String("target", "", "Override preferred target by name")
-	listHosts   = flag.Bool("list-hosts", false, "List available MemoryPlay hosts and exit")
-	listTargets = flag.Bool("list-targets", false, "List available targets from MemoryPlay host and exit")
-	playFile    = flag.String("play", "", "Play a file or URL directly")
-	mpdAddr     = flag.String("mpd-addr", "localhost:6600", "MPD server listen address")
-	daemonMode  = flag.Bool("daemon", false, "Run as MPD server daemon (otherwise play URLs and exit)")
-	useNative   = flag.Bool("native", false, "Use native Go implementation instead of CGo for MemoryPlay protocol")
+	configPath    = flag.String("config", getDefaultConfigPath(), "Path to configuration file")
+	host          = flag.String("host", "", "MemoryPlay host IP address (default: ::1, port is auto-discovered)")
+	targetName    = flag.String("target", "", "Override preferred target by name")
+	listHosts     = flag.Bool("list-hosts", false, "List available MemoryPlay hosts and exit")
+	listTargets   = flag.Bool("list-targets", false, "List available targets from MemoryPlay host and exit")
+	playFile      = flag.String("play", "", "Play a file or URL directly")
+	mpdAddr       = flag.String("mpd-addr", "localhost:6600", "MPD server listen address")
+	mpdMode       = flag.Bool("mpd", false, "Run as MPD server daemon (mutually exclusive with --slimproto)")
+	slimprotoMode = flag.Bool("slimproto", false, "Run as a Slimproto (Lyrion/LMS) player (mutually exclusive with --mpd)")
+	slimServer    = flag.String("slim-server", "", "LMS server address (host or host:port); empty = UDP auto-discover")
+	slimName      = flag.String("slim-name", "direttampd", "Player name registered with LMS")
+	slimMAC       = flag.String("slim-mac", "", "Player MAC address (aa:bb:cc:dd:ee:ff); empty = derive from hostname")
+	useNative     = flag.Bool("native", false, "Use native Go implementation instead of CGo for MemoryPlay protocol")
 )
 
 func main() {
@@ -70,15 +75,26 @@ func main() {
 		}
 	}
 
+	// Mutually-exclusive daemon modes
+	if *mpdMode && *slimprotoMode {
+		log.Fatalf("--mpd and --slimproto cannot be used together")
+	}
+
 	// Create player
 	p, err := player.NewPlayer(cfg, *useNative)
 	if err != nil {
 		log.Fatalf("Failed to create player: %v", err)
 	}
 
-	// Daemon mode: run MPD server
-	if *daemonMode {
-		runDaemon(p)
+	// MPD daemon mode
+	if *mpdMode {
+		runMPD(p)
+		return
+	}
+
+	// Slimproto daemon mode
+	if *slimprotoMode {
+		runSlimproto(p, *slimServer, *slimName, *slimMAC)
 		return
 	}
 
@@ -105,17 +121,20 @@ func main() {
 		_, _ = fmt.Fprintf(os.Stderr, "\n  # Play multiple files\n")
 		_, _ = fmt.Fprintf(os.Stderr, "  %s track01.flac track02.flac track03.flac\n", os.Args[0])
 		_, _ = fmt.Fprintf(os.Stderr, "\n  # Run as MPD server daemon\n")
-		_, _ = fmt.Fprintf(os.Stderr, "  %s --daemon\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "  %s --mpd\n", os.Args[0])
 		_, _ = fmt.Fprintf(os.Stderr, "  mpc add http://stream.example.com/radio.mp3\n")
 		_, _ = fmt.Fprintf(os.Stderr, "  mpc play\n")
+		_, _ = fmt.Fprintf(os.Stderr, "\n  # Run as a Slimproto (LMS) player\n")
+		_, _ = fmt.Fprintf(os.Stderr, "  %s --slimproto --slim-server 192.168.1.10 --slim-name \"Living Room\"\n", os.Args[0])
+		_, _ = fmt.Fprintf(os.Stderr, "  %s --slimproto   # auto-discover LMS on the LAN\n", os.Args[0])
 		os.Exit(1)
 	}
 
 	runDirect(p, urls)
 }
 
-// runDaemon runs the MPD server daemon
-func runDaemon(p *player.Player) {
+// runMPD runs the MPD server daemon
+func runMPD(p *player.Player) {
 	// Create and start MPD server
 	server := mpd.NewServer(*mpdAddr, p)
 	if err := server.Start(); err != nil {
@@ -125,6 +144,27 @@ func runDaemon(p *player.Player) {
 
 	log.Printf("Direttampd running in daemon mode")
 	log.Printf("Connect with MPD clients to %s", *mpdAddr)
+
+	// Wait for interrupt signal
+	sigChan := make(chan os.Signal, 1)
+	signal.Notify(sigChan, os.Interrupt, syscall.SIGTERM)
+
+	<-sigChan
+	log.Printf("\nShutting down...")
+}
+
+// runSlimproto runs as a Slimproto (LMS) player
+func runSlimproto(p *player.Player, server, name, mac string) {
+	client, err := slimproto.NewClient(slimprotoPlayerAdapter{p: p}, server, name, mac)
+	if err != nil {
+		log.Fatalf("Failed to create Slimproto client: %v", err)
+	}
+	if err := client.Start(); err != nil {
+		log.Fatalf("Failed to start Slimproto client: %v", err)
+	}
+	defer client.Stop()
+
+	log.Printf("Direttampd running as Slimproto player %q against %s", client.Name(), client.Server())
 
 	// Wait for interrupt signal
 	sigChan := make(chan os.Signal, 1)
